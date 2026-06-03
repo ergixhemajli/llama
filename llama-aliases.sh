@@ -1,21 +1,13 @@
 #!/usr/bin/env bash
 # llama-aliases.sh — Ollama-style aliases for llama.cpp
 
-LLM_MODELS_DIR="${LLM_MODELS_DIR:-$HOME/llama-models}"
+LLM_MODELS_DIR="${LLM_MODELS_DIR:-$HOME/.llama/llama-models}"
 LLM_DEFAULT_CTX="${LLM_DEFAULT_CTX:-32768}"
 LLM_DEFAULT_GPU_LAYERS="${LLM_DEFAULT_GPU_LAYERS:-99}"   # 0 = CPU only, 99 = all to GPU
 LLM_SERVER_HOST="${LLM_SERVER_HOST:-127.0.0.1}"
 LLM_SERVER_PORT="${LLM_SERVER_PORT:-11434}"
-LLM_HF_DEFAULT_USER="${LLM_HF_DEFAULT_USER:-unsloth}"  # Default HF model author for pulls
+LLM_HF_DEFAULT_USER="${LLM_HF_DEFAULT_USER:-unsloth}"
 
-# Clear any existing aliases to prevent zsh function definition conflicts
-unalias llama 2>/dev/null
-unalias llama-ask 2>/dev/null
-unalias llama-pipe 2>/dev/null
-
-# ─────────────────────────────────────────────
-#  Internal helpers
-# ─────────────────────────────────────────────
 _llama_find_model() {
     local query="$1"
     [ -z "$query" ] && { echo "Error: no model specified" >&2; return 1; }
@@ -35,35 +27,22 @@ _llama_find_mmproj() {
     local model_path="$1"
     local base="${model_path##*/}"
     base="${base%.gguf}"
-    # Try exact match first
+
+    # Exact match
     local candidate="$LLM_MODELS_DIR/mmproj-F16-${base}.gguf"
     [ -f "$candidate" ] && { echo "$candidate"; return 0; }
-    # Strip quant suffix (e.g., -UD-Q4_K_XL, -Q5_K_M, etc.) for partial match
+
+    # Strip quant suffix and try again
     local stripped
-    stripped=$(echo "$base" | sed -E 's-(UD-)?Q[0-9]+_[A-Z]+_?[A-Z]*X?[L]?-[0-9]*L?$-; s-(UD-)?Q[0-9]+_[A-Z]+-[0-9]*L?$-; s-UD-Q4_K_S$-; s-UD-Q4_K_M$-; s-Q4_K_M$-; s-Q5_K_M$-; s-Q8_0$-')
+    stripped=$(echo "$base" | sed -E 's/[-_](UD-)?Q[0-9]+_[A-Z0-9]+(_[A-Z0-9]+)*$//')
     candidate="$LLM_MODELS_DIR/mmproj-F16-${stripped}.gguf"
     [ -f "$candidate" ] && { echo "$candidate"; return 0; }
-    # Fallback: fuzzy match mmproj file containing a shortened model name
+
+    # Fuzzy: mmproj starts with stripped base
     local fuzzy
-    fuzzy=$(find "$LLM_MODELS_DIR" -iname "mmproj-F16-${base}*.gguf" 2>/dev/null | head -1)
+    fuzzy=$(find "$LLM_MODELS_DIR" -iname "mmproj-F16-${stripped}*.gguf" 2>/dev/null | head -1)
     [ -n "$fuzzy" ] && { echo "$fuzzy"; return 0; }
-    # Last resort: check if any mmproj in the directory could match by shared prefix
-    local mmproj_list
-    mmproj_list=$(find "$LLM_MODELS_DIR" -name "mmproj-F16-*.gguf" 2>/dev/null | sort)
-    if [ -n "$mmproj_list" ]; then
-        while IFS= read -r mmf; do
-            local mmf_base
-            mmf_base=$(basename "$mmf" .gguf)
-            mmf_base="${mmf_base#mmproj-F16-}"
-            # Check if mmproj name is a substring of the model name or vice versa
-            case "$base" in
-                *"$mmf_base"*) echo "$mmf"; return 0 ;;
-            esac
-            case "$mmf_base" in
-                *"$base"*) echo "$mmf"; return 0 ;;
-            esac
-        done <<< "$mmproj_list"
-    fi
+
     return 1
 }
 
@@ -71,9 +50,6 @@ _llama_server_running() {
     curl -sf "http://${LLM_SERVER_HOST}:${LLM_SERVER_PORT}/health" > /dev/null 2>&1
 }
 
-# ─────────────────────────────────────────────
-#  Main Command Entry Point
-# ─────────────────────────────────────────────
 llama() {
     local subcmd="$1"; shift
     case "$subcmd" in
@@ -121,23 +97,23 @@ _llama_serve() {
     local model_query="$1"; shift
     local model_path
     model_path=$(_llama_find_model "$model_query") || return 1
-    local mmproj_path=""
-    if mmproj_path=$(_llama_find_mmproj "$model_path"); then
-        echo "  Vision projector: ${mmproj_path##*/}"
-    fi
-    echo "▶ Starting server: ${model_path##*/}"
-    echo "  Listening at http://${LLM_SERVER_HOST}:${LLM_SERVER_PORT}"
-    echo "  OpenAI-compatible: POST /v1/chat/completions"
-    echo ""
+    local mmproj_path
+    mmproj_path=$(_llama_find_mmproj "$model_path") || {
+        local _base; _base=$(basename "$model_path" .gguf)
+        local _stripped; _stripped=$(echo "$_base" | sed -E 's/[-_](UD-)?Q[0-9]+_[A-Z0-9]+(_[A-Z0-9]+)*$//')
+        echo "  WARNING: No mmproj found for $model_path"
+        echo "  Expected: mmproj-F16-${_stripped}.gguf"
+        mmproj_path=""
+    }
+    [ -n "$mmproj_path" ] && echo "  Vision projector: ${mmproj_path##*/}"
+    echo "▶ Serving: ${model_path##*/}"
     local args=(
         --model "$model_path"
+        --ctx-size "$LLM_DEFAULT_CTX"
         --n-gpu-layers "$LLM_DEFAULT_GPU_LAYERS"
         --threads "$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
         --host "$LLM_SERVER_HOST"
         --port "$LLM_SERVER_PORT"
-        -np 1
-        -fit off
-        --ctx-size "$LLM_DEFAULT_CTX"
     )
     [ -n "$mmproj_path" ] && args+=(--mmproj "$mmproj_path")
     llama-server "${args[@]}" "$@"
@@ -252,22 +228,24 @@ except Exception:
         _llama_register_opencode "$filename"
     fi
 
-    if [[ "$filename" != mmproj* ]]; then
-        local mmproj_remote="mmproj-F16.gguf"
-        local http_status
-        http_status=$(curl -sf -o /dev/null -w "%{http_code}" -L --max-time 5 "https://huggingface.co/${hf_repo}/resolve/main/${mmproj_remote}" 2>/dev/null)
-        if [ "$http_status" = "200" ]; then
-            local model_base="${filename%.gguf}"
-            local mmproj_out="$LLM_MODELS_DIR/mmproj-F16-${model_base}.gguf"
-            echo ""
-            printf "Vision projector (mmproj-F16) found — download it? [Y/n] "
-            read -r mmproj_confirm
-            if [[ "${mmproj_confirm:-Y}" =~ ^[Yy]$ ]]; then
-                echo "▶ Downloading mmproj-F16 → ${mmproj_out##*/}…"
-                curl -L --progress-bar -o "$mmproj_out" "https://huggingface.co/${hf_repo}/resolve/main/${mmproj_remote}"
-                echo "✓ Saved to $mmproj_out"
-            fi
-        fi
+		if [[ "$filename" != mmproj* ]]; then
+			local mmproj_remote="mmproj-F16.gguf"
+			local http_status
+			http_status=$(curl -sf -o /dev/null -w "%{http_code}" -L --max-time 5 "https://huggingface.co/${hf_repo}/resolve/main/${mmproj_remote}" 2>/dev/null)
+			if [ "$http_status" = "200" ]; then
+				local model_base="${filename%.gguf}"
+				local stripped_base
+				stripped_base=$(echo "$model_base" | sed -E 's/[-_](UD-)?Q[0-9]+_[A-Z0-9]+(_[A-Z0-9]+)*$//')
+				local mmproj_out="$LLM_MODELS_DIR/mmproj-F16-${stripped_base}.gguf"
+				echo ""
+				printf "Vision projector (mmproj-F16) found — download it? [Y/n] "
+				read -r mmproj_confirm
+				if [[ "${mmproj_confirm:-Y}" =~ ^[Yy]$ ]]; then
+					echo "▶ Downloading mmproj-F16 → ${mmproj_out##*/}…"
+					curl -L --progress-bar -o "$mmproj_out" "https://huggingface.co/${hf_repo}/resolve/main/${mmproj_remote}"
+					echo "✓ Saved to $mmproj_out"
+				fi
+			fi
     fi
 }
 
@@ -279,7 +257,10 @@ _llama_rm() {
 
     local model_base="${model_path##*/}"
     model_base="${model_base%.gguf}"
-    local mmproj_path="$LLM_MODELS_DIR/mmproj-F16-${model_base}.gguf"
+    local model_stripped
+    model_stripped=$(echo "$model_base" | sed -E 's/[-_](UD-)?Q[0-9]+_[A-Z0-9]+(_[A-Z0-9]+)*$//')
+    local mmproj_path
+    mmproj_path=$(_llama_find_mmproj "$model_path" 2>/dev/null || echo "")
 
     echo "🗑  Target: ${model_path##*/}"
     if [ -f "$mmproj_path" ]; then
@@ -435,7 +416,7 @@ _llama_help() {
     echo "  help                   Show this help"
     echo ""
     echo "Environment variables:"
-    echo "  LLM_MODELS_DIR         Model storage directory (default: \$HOME/llama-models)"
+    echo "  LLM_MODELS_DIR         Model storage directory (default: \$HOME/.llama/llama-models)"
     echo "  LLM_DEFAULT_CTX        Context size (default: 32768)"
     echo "  LLM_DEFAULT_GPU_LAYERS GPU layers (default: 99)"
     echo "  LLM_SERVER_HOST        Server host (default: 127.0.0.1)"
@@ -444,9 +425,6 @@ _llama_help() {
     echo "🦙 \033[2mllama.cpp\033[0m"
 }
 
-# ─────────────────────────────────────────────
-#  Convenience aliases
-# ─────────────────────────────────────────────
 llama-ask() {
     _llama_ask "$@"
 }
@@ -455,9 +433,6 @@ llama-pipe() {
     _llama_pipe "$@"
 }
 
-# ─────────────────────────────────────────────
-#  Tab completion for bash
-# ─────────────────────────────────────────────
 if [[ -n "$BASH_VERSION" ]]; then
     _llama_bash_complete() {
         local cur="${COMP_WORDS[COMP_CWORD]}"
@@ -518,9 +493,6 @@ if [[ -n "$BASH_VERSION" ]]; then
     complete -F _llama_pipe_complete llama-pipe
 fi
 
-# ─────────────────────────────────────────────
-#  Tab completion for zsh (interactive only)
-# ─────────────────────────────────────────────
 if [[ -n "$ZSH_VERSION" && -o interactive ]]; then
     _llama_complete() {
         local state
