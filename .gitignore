@@ -1,2 +1,4 @@
 llama-models/
 llama-models/*
+llama-server.log
+.DS_Store
