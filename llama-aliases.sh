@@ -15,7 +15,10 @@ source "$_llama_dir/llama.d/llama-core.sh"
 source "$_llama_dir/llama.d/llama-extras.sh"
 
 llama() {
-    local subcmd="$1"; shift
+    local subcmd="${1:-}"
+    if [ $# -gt 0 ]; then
+        shift
+    fi
     case "$subcmd" in
         run)        _llama_run "$@" ;;
         serve)      _llama_serve "$@" ;;
@@ -28,7 +31,7 @@ llama() {
         doctor)     _llama_doctor "$@" ;;
         config)     _llama_config "$@" ;;
         bench)      _llama_bench "$@" ;;
-        ask)        _llama_ask "$@" ;;
+        speed)      _llama_speed "$@" ;;
         pipe)       _llama_pipe "$@" ;;
         help|"")    _llama_help ;;
         *)

@@ -4,20 +4,31 @@ if [[ -n "$BASH_VERSION" ]]; then
     _llama_bash_complete() {
         local cur="${COMP_WORDS[COMP_CWORD]}"
         local prev="${COMP_WORDS[COMP_CWORD-1]}"
-        local subcmds="run serve list pull rm remove stop ps logs doctor config bench ask pipe help"
-
+        local subcmds="run serve list pull rm remove stop ps logs doctor config bench speed pipe help"
         if [[ ${#COMP_WORDS[@]} -eq 2 ]]; then
             COMPREPLY=( $(compgen -W "$subcmds" -- "$cur") )
             return
         fi
 
-        if [[ ${#COMP_WORDS[@]} -eq 3 ]]; then
-            case "$prev" in
-                run|serve|rm|remove|doctor|bench|ask|pipe)
+        case "$prev" in
+            config)
+                COMPREPLY=( $(compgen -W "show threads cache pipe-n no-thinking save load" -- "$cur") )
+                return
+                ;;
+            no-thinking)
+                COMPREPLY=( $(compgen -W "on off" -- "$cur") )
+                return
+                ;;
+        esac
+
+        if [[ ${#COMP_WORDS[@]} -ge 3 ]]; then
+            case "${COMP_WORDS[1]}" in
+                run|serve|rm|remove|doctor|bench|speed|pipe)
                     if [[ -d "$LLM_MODELS_DIR" ]]; then
                         local models=()
                         while IFS= read -r -d '' f; do
                             local bname="${f##*/}"
+                            [[ "$bname" == mmproj* ]] && continue
                             models+=("${bname%.gguf}")
                         done < <(find "$LLM_MODELS_DIR" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null | sort -z)
                         COMPREPLY=( $(compgen -W "${models[*]}" -- "$cur") )
@@ -28,25 +39,13 @@ if [[ -n "$BASH_VERSION" ]]; then
     }
     complete -F _llama_bash_complete llama
 
-    _llama_ask_complete() {
-        local cur="${COMP_WORDS[COMP_CWORD]}"
-        if [[ ${#COMP_WORDS[@]} -eq 2 && -d "$LLM_MODELS_DIR" ]]; then
-            local models=()
-            while IFS= read -r -d '' f; do
-                local bname="${f##*/}"
-                models+=("${bname%.gguf}")
-            done < <(find "$LLM_MODELS_DIR" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null | sort -z)
-            COMPREPLY=( $(compgen -W "${models[*]}" -- "$cur") )
-        fi
-    }
-    complete -F _llama_ask_complete llama-ask
-
     _llama_pipe_complete() {
         local cur="${COMP_WORDS[COMP_CWORD]}"
         if [[ ${#COMP_WORDS[@]} -eq 2 && -d "$LLM_MODELS_DIR" ]]; then
             local models=()
             while IFS= read -r -d '' f; do
                 local bname="${f##*/}"
+                [[ "$bname" == mmproj* ]] && continue
                 models+=("${bname%.gguf}")
             done < <(find "$LLM_MODELS_DIR" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null | sort -z)
             COMPREPLY=( $(compgen -W "${models[*]}" -- "$cur") )
@@ -61,6 +60,7 @@ if [[ -n "$ZSH_VERSION" && -o interactive ]]; then
     _llama_complete() {
         local state
         local -a subcommands models
+        local -a config_keys
         subcommands=(
             'run:Interactive chat with a model'
             'serve:Start OpenAI-compatible API server'
@@ -73,17 +73,33 @@ if [[ -n "$ZSH_VERSION" && -o interactive ]]; then
             'doctor:Check runtime health'
             'config:Set runtime toggles'
             'bench:Benchmark inference speed'
-            'ask:One-shot question to a model'
+            'speed:Measure generation speed with runtime path'
             'pipe:Pipe stdin or file into a model with instruction'
             'help:Show help'
+        )
+        config_keys=(
+            'show:Show current runtime config'
+            'threads:Set thread count'
+            'cache:Set KV cache type'
+            'pipe-n:Set pipe output tokens'
+            'no-thinking:Set default no-thinking toggle'
+            'save:Save runtime config'
+            'load:Load runtime config'
         )
         _arguments -C '1: :->subcmd' '2: :->model' '*: :->args' && return
         case $state in
             subcmd) _describe 'subcommand' subcommands ;;
             model)
                 case $words[2] in
-                    run|serve|remove|doctor|bench|ask|pipe)
-                        models=($(find "$LLM_MODELS_DIR" -name "*.gguf" 2>/dev/null | xargs -I{} basename {} .gguf | sort))
+                    config)
+                        _describe 'config key' config_keys ;;
+                    run|serve|remove|doctor|bench|speed|pipe)
+                        models=()
+                        while IFS= read -r -d '' f; do
+                            local bname="${f##*/}"
+                            [[ "$bname" == mmproj* ]] && continue
+                            models+=("${bname%.gguf}")
+                        done < <(find "$LLM_MODELS_DIR" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null | sort -z)
                         _describe 'model' models ;;
                 esac ;;
         esac
@@ -92,14 +108,36 @@ if [[ -n "$ZSH_VERSION" && -o interactive ]]; then
 
     _llama_cmd_complete() {
         local -a models
-        models=($(find "$LLM_MODELS_DIR" -name "*.gguf" 2>/dev/null | xargs -I{} basename {} .gguf | sort))
+        models=()
+        while IFS= read -r -d '' f; do
+            local bname="${f##*/}"
+            [[ "$bname" == mmproj* ]] && continue
+            models+=("${bname%.gguf}")
+        done < <(find "$LLM_MODELS_DIR" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null | sort -z)
         _arguments '1:model:($models)'
     }
     compdef _llama_cmd_complete llama-ask
 
+    _llama_speed_complete() {
+        local -a models
+        models=()
+        while IFS= read -r -d '' f; do
+            local bname="${f##*/}"
+            [[ "$bname" == mmproj* ]] && continue
+            models+=("${bname%.gguf}")
+        done < <(find "$LLM_MODELS_DIR" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null | sort -z)
+        _arguments '1:model:($models)' '--tokens[tokens per run]:tokens' '--runs[number of runs]:runs'
+    }
+    compdef _llama_speed_complete llama-speed
+
     _llama_pipe_complete() {
         local -a models
-        models=($(find "$LLM_MODELS_DIR" -name "*.gguf" 2>/dev/null | xargs -I{} basename {} .gguf | sort))
+        models=()
+        while IFS= read -r -d '' f; do
+            local bname="${f##*/}"
+            [[ "$bname" == mmproj* ]] && continue
+            models+=("${bname%.gguf}")
+        done < <(find "$LLM_MODELS_DIR" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null | sort -z)
         _arguments '1:model:($models)' '2:instruction:' '3:file:_files'
     }
     compdef _llama_pipe_complete llama-pipe

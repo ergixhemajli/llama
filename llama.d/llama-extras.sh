@@ -73,6 +73,12 @@ _llama_doctor() {
         echo "[FAIL] llama-bench not found in PATH"
     fi
 
+    if command -v hf >/dev/null 2>&1; then
+        echo "[OK] hf CLI found: $(command -v hf)"
+    else
+        echo "[WARN] hf CLI not found (recommended for smoother model downloads)"
+    fi
+
     if [ -d "$LLM_MODELS_DIR" ]; then
         local model_count
         model_count=$(find "$LLM_MODELS_DIR" -maxdepth 1 -name "*.gguf" 2>/dev/null | wc -l | tr -d ' ')
@@ -88,10 +94,8 @@ _llama_doctor() {
     echo "  LLM_DEFAULT_CACHE_TYPE_K=$LLM_DEFAULT_CACHE_TYPE_K"
     echo "  LLM_DEFAULT_CACHE_TYPE_V=$LLM_DEFAULT_CACHE_TYPE_V"
     echo "  LLM_DEFAULT_THREADS=${LLM_DEFAULT_THREADS:-<auto p-cores>}"
-    echo "  LLM_ASK_N_PREDICT=$LLM_ASK_N_PREDICT"
-    echo "  LLM_ASK_REASONING=$LLM_ASK_REASONING"
-    echo "  LLM_ASK_IGNORE_EOS=$LLM_ASK_IGNORE_EOS"
     echo "  LLM_PIPE_N_PREDICT=$LLM_PIPE_N_PREDICT"
+    echo "  LLM_NO_THINKING=$LLM_NO_THINKING"
 
     if _llama_server_running; then
         echo ""
@@ -109,6 +113,29 @@ _llama_doctor() {
 
     if [ -n "$model_path" ]; then
         echo "[OK] Model resolves: ${model_path##*/}"
+        if _llama_binary_supports_mtp llama-cli; then
+            if [ "$(_llama_model_tech_for_file "$model_path")" = "MTP" ]; then
+                echo "[OK] MTP mode: checkpoint marked as MTP (draft tokens: 2)"
+            else
+                local draft_model_path=""
+                local assistant_dir=""
+                if draft_model_path=$(_llama_find_draft_model "$model_path"); then
+                    echo "[OK] MTP mode: assistant MTP available (${draft_model_path##*/}, draft tokens: 2)"
+                elif assistant_dir=$(_llama_find_local_assistant_dir_for_model "$model_path" 2>/dev/null); then
+                    if _llama_binary_supports_gemma_assistant llama-cli; then
+                        echo "[WARN] MTP mode: assistant directory found (${assistant_dir##*/}) but no assistant GGUF file"
+                        echo "[INFO] MTP mode: llama.cpp needs assistant GGUF via --spec-draft-model"
+                    else
+                        echo "[WARN] MTP mode: assistant directory found (${assistant_dir##*/})"
+                        echo "[INFO] MTP mode: this llama.cpp build lacks gemma4_assistant support"
+                    fi
+                else
+                    echo "[INFO] MTP mode: no MTP path found for this model"
+                fi
+            fi
+        else
+            echo "[INFO] MTP mode: llama.cpp binary does not support draft-mtp"
+        fi
     fi
 
     echo ""
@@ -120,6 +147,8 @@ _llama_bench() {
     shift
     local model_path
     model_path=$(_llama_find_model "$model_query") || return 1
+    local tech
+    tech="$(_llama_model_tech_for_file "$model_path")"
     local user_set_ctk=0
     local user_set_ctv=0
     local arg
@@ -130,6 +159,11 @@ _llama_bench() {
         esac
     done
     echo "▶ Benchmarking: ${model_path##*/}"
+    if [ "$tech" = "MTP" ]; then
+        echo "  Runtime: GGUF + MTP model (llama-bench currently benchmarks plain decode path)"
+    else
+        echo "  Runtime: GGUF (plain)"
+    fi
     local args=(
         -m "$model_path"
         -n 256
@@ -139,6 +173,127 @@ _llama_bench() {
     [ "$user_set_ctk" = "0" ] && args+=(-ctk "$(_llama_resolve_cache_type_k)")
     [ "$user_set_ctv" = "0" ] && args+=(-ctv "$(_llama_resolve_cache_type_v)")
     llama-bench "${args[@]}" "$@"
+}
+
+_llama_speed() {
+    local model_query="$1"
+    [ -z "$model_query" ] && { echo "Usage: llama speed <model> [--tokens N] [--runs N]"; return 1; }
+    shift
+
+    local tokens=512
+    local runs=1
+    local passthrough=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --tokens)
+                shift
+                tokens="${1:-512}"
+                ;;
+            --runs)
+                shift
+                runs="${1:-1}"
+                ;;
+            *)
+                passthrough+=("$1")
+                ;;
+        esac
+        shift
+    done
+
+    local model_path
+    model_path=$(_llama_find_model "$model_query") || return 1
+    _llama_model_meta_backfill_for_file "$model_path"
+
+    local mmproj_path=""
+    if mmproj_path=$(_llama_find_mmproj "$model_path" 2>/dev/null); then
+        :
+    fi
+
+    local runtime_label="GGUF (plain - no MTP path found)"
+    local args=(
+        --model "$model_path"
+        --ctx-size "$LLM_DEFAULT_CTX"
+        --n-gpu-layers "$LLM_DEFAULT_GPU_LAYERS"
+        --cache-type-k "$(_llama_resolve_cache_type_k)"
+        --cache-type-v "$(_llama_resolve_cache_type_v)"
+        --threads "$(_llama_cpu_threads)"
+        --single-turn
+        --no-display-prompt
+        --log-disable
+        --n-predict "$tokens"
+        --prompt "Write one sentence about low-latency inference."
+    )
+
+    if _llama_binary_supports_mtp llama-cli; then
+        local draft_model_path=""
+        local assistant_dir=""
+        if [ "$(_llama_model_tech_for_file "$model_path")" = "MTP" ]; then
+            args+=(--spec-type draft-mtp --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
+            runtime_label="GGUF + MTP (embedded/marked, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
+        elif draft_model_path=$(_llama_find_draft_model "$model_path"); then
+            args+=(--spec-type draft-mtp --spec-draft-model "$draft_model_path" --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
+            runtime_label="GGUF + MTP (assistant: ${draft_model_path##*/}, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
+        elif assistant_dir=$(_llama_find_local_assistant_dir_for_model "$model_path" 2>/dev/null); then
+            local assistant_repo
+            assistant_repo=$(_llama_infer_assistant_hf_repo_from_filename "${model_path##*/}")
+            if [ -n "$assistant_repo" ] && command -v hf >/dev/null 2>&1; then
+                local assistant_download_dir="$LLM_MODELS_DIR/.assistant-gguf"
+                mkdir -p "$assistant_download_dir"
+                local assistant_name="${assistant_repo##*/}.gguf"
+                local assistant_gguf="$assistant_download_dir/$assistant_name"
+                if [ ! -f "$assistant_gguf" ]; then
+                    echo "  Assistant: downloading GGUF for MTP ($assistant_repo)..."
+                    if hf download "$assistant_repo" --include "*.gguf" --local-dir "$assistant_download_dir" >/dev/null 2>&1; then
+                        local first_gguf
+                        first_gguf=$(find "$assistant_download_dir" -name "*.gguf" 2>/dev/null | sort | head -1)
+                        [ -n "$first_gguf" ] && mv -f "$first_gguf" "$assistant_gguf"
+                    fi
+                fi
+                if [ -f "$assistant_gguf" ]; then
+                    args+=(--spec-type draft-mtp --spec-draft-model "$assistant_gguf" --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
+                    runtime_label="GGUF + MTP (assistant: ${assistant_gguf##*/}, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
+                else
+                    runtime_label="GGUF (plain - assistant dir present but assistant GGUF unavailable)"
+                fi
+            else
+                runtime_label="GGUF (plain - assistant dir present but hf CLI/repo mapping unavailable)"
+            fi
+        fi
+    else
+        runtime_label="GGUF (plain - draft-mtp unavailable in llama.cpp binary)"
+    fi
+
+    [ -n "$mmproj_path" ] && args+=(--mmproj "$mmproj_path")
+
+    echo "▶ Speed test: ${model_path##*/}"
+    echo "  Runtime: $runtime_label"
+    echo "  Tokens per run: $tokens"
+    echo "  Runs: $runs"
+
+    local run_idx out tps sum=0 count=0
+    for ((run_idx=1; run_idx<=runs; run_idx++)); do
+        echo "  Run $run_idx/$runs..."
+        out=$(llama-cli "${args[@]}" "${passthrough[@]}" 2>&1)
+        tps=$(printf '%s\n' "$out" | python3 -c '
+import re,sys
+s=sys.stdin.read()
+m=re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*tokens/s", s)
+print(m[-1] if m else "")
+')
+        if [ -n "$tps" ]; then
+            echo "    tokens/s: $tps"
+            sum=$(python3 -c "print($sum + float('$tps'))")
+            count=$((count + 1))
+        else
+            echo "    tokens/s: (not parsed; rerun with --verbose if needed)"
+        fi
+    done
+
+    if [ "$count" -gt 0 ]; then
+        local avg
+        avg=$(python3 -c "print(round($sum / $count, 2))")
+        echo "  Average tokens/s: $avg"
+    fi
 }
 
 _llama_config() {
@@ -152,16 +307,14 @@ _llama_config() {
             echo "  LLM_DEFAULT_CACHE_TYPE_K=$LLM_DEFAULT_CACHE_TYPE_K"
             echo "  LLM_DEFAULT_CACHE_TYPE_V=$LLM_DEFAULT_CACHE_TYPE_V"
             echo "  LLM_DEFAULT_THREADS=${LLM_DEFAULT_THREADS:-<auto p-cores>}"
-            echo "  LLM_ASK_N_PREDICT=$LLM_ASK_N_PREDICT"
-            echo "  LLM_ASK_REASONING=$LLM_ASK_REASONING"
-            echo "  LLM_ASK_IGNORE_EOS=$LLM_ASK_IGNORE_EOS"
             echo "  LLM_PIPE_N_PREDICT=$LLM_PIPE_N_PREDICT"
+            echo "  LLM_NO_THINKING=$LLM_NO_THINKING"
             echo ""
             echo "Usage:"
             echo "  llama config threads <n|auto>"
             echo "  llama config cache <type>"
-            echo "  llama config ask <stable|balanced|reasoning>"
             echo "  llama config pipe-n <n>"
+            echo "  llama config no-thinking <on|off>"
             echo "  llama config save [file]"
             echo "  llama config load [file]"
             echo ""
@@ -185,33 +338,6 @@ _llama_config() {
             echo "✓ LLM_DEFAULT_CACHE_TYPE_K=$LLM_DEFAULT_CACHE_TYPE_K"
             echo "✓ LLM_DEFAULT_CACHE_TYPE_V=$LLM_DEFAULT_CACHE_TYPE_V"
             ;;
-        ask)
-            case "$value" in
-                stable|"")
-                    export LLM_ASK_N_PREDICT=1024
-                    export LLM_ASK_REASONING=off
-                    export LLM_ASK_IGNORE_EOS=0
-                    ;;
-                balanced)
-                    export LLM_ASK_N_PREDICT=768
-                    export LLM_ASK_REASONING=auto
-                    export LLM_ASK_IGNORE_EOS=0
-                    ;;
-                reasoning)
-                    export LLM_ASK_N_PREDICT=1024
-                    export LLM_ASK_REASONING=on
-                    export LLM_ASK_IGNORE_EOS=0
-                    ;;
-                *)
-                    echo "Usage: llama config ask <stable|balanced|reasoning>"
-                    return 1
-                    ;;
-            esac
-            echo "✓ Ask profile: $value"
-            echo "  LLM_ASK_N_PREDICT=$LLM_ASK_N_PREDICT"
-            echo "  LLM_ASK_REASONING=$LLM_ASK_REASONING"
-            echo "  LLM_ASK_IGNORE_EOS=$LLM_ASK_IGNORE_EOS"
-            ;;
         pipe-n)
             if [[ "$value" =~ ^[0-9]+$ ]]; then
                 export LLM_PIPE_N_PREDICT="$value"
@@ -221,6 +347,22 @@ _llama_config() {
                 return 1
             fi
             ;;
+        no-thinking)
+            case "$value" in
+                on|1|true|yes)
+                    export LLM_NO_THINKING="1"
+                    echo "✓ LLM_NO_THINKING=$LLM_NO_THINKING"
+                    ;;
+                off|0|false|no|"")
+                    export LLM_NO_THINKING="0"
+                    echo "✓ LLM_NO_THINKING=$LLM_NO_THINKING"
+                    ;;
+                *)
+                    echo "Usage: llama config no-thinking <on|off>"
+                    return 1
+                    ;;
+            esac
+            ;;
         save)
             local out_file="${value:-$LLM_RUNTIME_CONFIG_FILE}"
             mkdir -p "$(dirname "$out_file")"
@@ -229,10 +371,8 @@ _llama_config() {
 export LLM_DEFAULT_CACHE_TYPE_K="${LLM_DEFAULT_CACHE_TYPE_K}"
 export LLM_DEFAULT_CACHE_TYPE_V="${LLM_DEFAULT_CACHE_TYPE_V}"
 export LLM_DEFAULT_THREADS="${LLM_DEFAULT_THREADS}"
-export LLM_ASK_N_PREDICT="${LLM_ASK_N_PREDICT}"
-export LLM_ASK_REASONING="${LLM_ASK_REASONING}"
-export LLM_ASK_IGNORE_EOS="${LLM_ASK_IGNORE_EOS}"
 export LLM_PIPE_N_PREDICT="${LLM_PIPE_N_PREDICT}"
+export LLM_NO_THINKING="${LLM_NO_THINKING}"
 EOF
             echo "✓ Saved runtime config to: $out_file"
             if [ "$out_file" = "$LLM_RUNTIME_CONFIG_FILE" ]; then
@@ -289,34 +429,6 @@ except Exception as e:
 " "$config_file" "$model_id" 2>/dev/null
 }
 
-_llama_ask() {
-    local model_query="$1"; shift
-    [[ -z "$model_query" || -z "$*" ]] && { echo "Usage: llama ask <model> <prompt>"; return 1; }
-    local model_path
-    model_path=$(_llama_find_model "$model_query") || return 1
-    local args=(
-        --model "$model_path"
-        --n-gpu-layers "$LLM_DEFAULT_GPU_LAYERS"
-        --ctx-size "$LLM_DEFAULT_CTX"
-        --cache-type-k "$(_llama_resolve_cache_type_k)"
-        --cache-type-v "$(_llama_resolve_cache_type_v)"
-        --conversation
-        --single-turn
-        --prompt "$*"
-        --n-predict "$LLM_ASK_N_PREDICT"
-        --no-display-prompt
-        --log-disable
-    )
-    if _llama_supports_reasoning; then
-        args+=(--reasoning "$LLM_ASK_REASONING")
-    fi
-    if [ "$LLM_ASK_IGNORE_EOS" = "1" ]; then
-        args+=(--ignore-eos)
-    fi
-    llama-cli "${args[@]}" 2>/dev/null
-    echo ""
-}
-
 _llama_pipe() {
     local model_query="$1"; shift
     local instruction="$1"; shift
@@ -342,18 +454,18 @@ _llama_help() {
     echo "Usage: llama <subcommand> [options]"
     echo ""
     echo "Subcommands:"
-    echo "  run <model> [args]     Run model interactively (llama-cli)"
-    echo "  serve [-d] <model> [args]  Start OpenAI-compatible API server"
+    echo "  run [--no-thinking] <model> [args]   Run interactively (auto-MTP for supported models)"
+    echo "  serve [-d] [--no-thinking] <model> [args]  Start OpenAI-compatible API server (auto-MTP for supported models)"
     echo "  list [-a]              List local models (-a shows mmproj files)"
-    echo "  pull <repo-or-url>     Pull a model from Hugging Face"
-    echo "  rm|remove <model>      Remove a model and its mmproj"
+    echo "  pull <repo-or-url>     Pull model files (GGUF chooser; MLX repos auto-download fully)"
+    echo "  rm|remove <model...>   Remove one or more models and their mmproj files"
     echo "  stop                   Stop running server"
     echo "  ps                     Show server status"
     echo "  logs [-f] [-n N]       Show/follow detached server logs"
     echo "  doctor [model]         Check binaries, models dir, and server health"
     echo "  config <key> ...       Set runtime env toggles without manual export"
     echo "  bench <model>          Run benchmark"
-    echo "  ask <model> <prompt>   One-shot question, exit after answer"
+    echo "  speed <model> [--tokens N] [--runs N]   Measure generation speed via llama-cli"
     echo "  pipe <model> <instr> [file]  Pipe stdin or file into model with instruction"
     echo "  help                   Show this help"
     echo ""
@@ -364,10 +476,8 @@ _llama_help() {
     echo "  LLM_DEFAULT_CACHE_TYPE_K KV cache K type (default: f16)"
     echo "  LLM_DEFAULT_CACHE_TYPE_V KV cache V type (default: f16)"
     echo "  LLM_DEFAULT_THREADS    CPU threads (default: auto p-cores on Apple)"
-    echo "  LLM_ASK_N_PREDICT      Default output tokens for 'llama ask' (1024)"
-    echo "  LLM_ASK_REASONING      Reasoning mode for 'llama ask' (default: off)"
-    echo "  LLM_ASK_IGNORE_EOS     Ignore EOS in 'llama ask' (default: 0)"
     echo "  LLM_PIPE_N_PREDICT     Default output tokens for 'llama pipe' (4096)"
+    echo "  LLM_NO_THINKING        Disable Qwen thinking by default: 0|1 (default: 0)"
     echo "  LLM_RUNTIME_CONFIG_FILE Default file for 'llama config save/load'"
     echo "  LLM_SERVER_HOST        Server host (default: 127.0.0.1)"
     echo "  LLM_SERVER_PORT        Server port (default: 11434)"
@@ -375,7 +485,6 @@ _llama_help() {
     echo "  LLM_SERVER_MIN_SPINNER_STEPS Minimum spinner frames before ready (default: 3)"
     echo ""
     echo "Helpers:"
-    echo "  llama config ask stable        # stable coding defaults for llama ask"
     echo "  llama config threads auto      # use Apple performance-core thread count"
     echo "  llama config cache q8_0        # common safe KV speed boost"
     echo "  llama config save              # persist current toggles"
@@ -389,8 +498,8 @@ if [[ -n "$LLM_RUNTIME_CONFIG_FILE" && -f "$LLM_RUNTIME_CONFIG_FILE" ]]; then
     source "$LLM_RUNTIME_CONFIG_FILE"
 fi
 
-llama-ask() {
-    _llama_ask "$@"
+llama-speed() {
+    _llama_speed "$@"
 }
 
 llama-pipe() {
