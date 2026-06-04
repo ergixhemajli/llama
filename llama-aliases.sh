@@ -9,10 +9,10 @@ elif [ -n "$ZSH_VERSION" ]; then
 fi
 _llama_dir="$(cd "$(dirname "$_llama_source_path")" && pwd)"
 
-# shellcheck source=.llama.d/llama-core.sh
-source "$_llama_dir/.llama.d/llama-core.sh"
+# shellcheck source=llama.d/llama-core.sh
+source "$_llama_dir/llama.d/llama-core.sh"
 # shellcheck source=.llama.d/llama-extras.sh
-source "$_llama_dir/.llama.d/llama-extras.sh"
+source "$_llama_dir/llama.d/llama-extras.sh"
 
 llama() {
     local subcmd="$1"; shift
@@ -40,6 +40,6 @@ llama() {
 }
 
 # shellcheck source=.llama.d/llama-completions.sh
-source "$_llama_dir/.llama.d/llama-completions.sh"
+source "$_llama_dir/llama.d/llama-completions.sh"
 
 echo "🦙 \033[2mllama.cpp\033[0m"
