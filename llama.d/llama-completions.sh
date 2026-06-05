@@ -4,7 +4,7 @@ if [[ -n "$BASH_VERSION" ]]; then
     _llama_bash_complete() {
         local cur="${COMP_WORDS[COMP_CWORD]}"
         local prev="${COMP_WORDS[COMP_CWORD-1]}"
-        local subcmds="run serve list pull rm remove stop ps logs doctor config bench speed pipe help"
+        local subcmds="run serve list pull rm remove stop ps logs doctor config bench speed pipe opencode completions help"
         if [[ ${#COMP_WORDS[@]} -eq 2 ]]; then
             COMPREPLY=( $(compgen -W "$subcmds" -- "$cur") )
             return
@@ -12,7 +12,7 @@ if [[ -n "$BASH_VERSION" ]]; then
 
         case "$prev" in
             config)
-                COMPREPLY=( $(compgen -W "show threads cache pipe-n no-thinking save load" -- "$cur") )
+                COMPREPLY=( $(compgen -W "show ctx LLM_DEFAULT_CTX threads cache pipe-n no-thinking save load" -- "$cur") )
                 return
                 ;;
             no-thinking)
@@ -75,10 +75,14 @@ if [[ -n "$ZSH_VERSION" && -o interactive ]]; then
             'bench:Benchmark inference speed'
             'speed:Measure generation speed with runtime path'
             'pipe:Pipe stdin or file into a model with instruction'
+            'opencode:Register model in opencode config'
+            'completions:Show completion setup status'
             'help:Show help'
         )
         config_keys=(
             'show:Show current runtime config'
+            'ctx:Set context size'
+            'LLM_DEFAULT_CTX:Set context size'
             'threads:Set thread count'
             'cache:Set KV cache type'
             'pipe-n:Set pipe output tokens'
