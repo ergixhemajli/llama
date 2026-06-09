@@ -47,7 +47,7 @@ _llama_rm() {
         for p in "${model_paths[@]}"; do
             if [ -f "$p" ]; then
                 _llama_model_meta_remove "${p##*/}"
-                _llama_unregister_opencode "${p##*/}"
+                _llama_unregister_integrations "${p##*/}"
                 rm -v "$p" 2>&1 | sed 's|^.*|  ✓ Removed |'
             fi
         done

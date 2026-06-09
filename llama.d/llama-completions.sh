@@ -4,7 +4,7 @@ if [[ -n "$BASH_VERSION" ]]; then
     _llama_bash_complete() {
         local cur="${COMP_WORDS[COMP_CWORD]}"
         local prev="${COMP_WORDS[COMP_CWORD-1]}"
-        local subcmds="run serve list pull rm remove stop ps logs doctor config bench speed pipe opencode completions help"
+        local subcmds="run serve list pull rm remove stop ps logs doctor config bench speed pipe opencode pi completions help"
         if [[ ${#COMP_WORDS[@]} -eq 2 ]]; then
             COMPREPLY=( $(compgen -W "$subcmds" -- "$cur") )
             return
@@ -75,7 +75,8 @@ if [[ -n "$ZSH_VERSION" && -o interactive ]]; then
             'bench:Benchmark inference speed'
             'speed:Measure generation speed with runtime path'
             'pipe:Pipe stdin or file into a model with instruction'
-            'opencode:Register model in opencode config'
+            'opencode:Register model in OpenCode + Pi configs'
+            'pi:Register model in OpenCode + Pi configs'
             'completions:Show completion setup status'
             'help:Show help'
         )

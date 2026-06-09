@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# llama-helpers.sh — Utility functions
+# llama-helpers.sh - Utility functions
 
 _llama_bool_is_true() {
     case "$1" in
@@ -46,9 +46,9 @@ _llama_binary_supports_mtp() {
     "$bin" --help 2>/dev/null | grep -q -- "draft-mtp"
 }
 
-_llama_binary_supports_gemma_assistant() {
-    local bin="$1"
-    "$bin" --help 2>/dev/null | grep -q -- "gemma4_assistant"
+_llama_binary_supports_gemma_assistant() { 
+    # gemma4_assistant is not a CLI flag — it's handled internally via draft-mtp
+    _llama_binary_supports_mtp "$@"
 }
 
 _llama_supports_reasoning() {

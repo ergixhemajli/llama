@@ -123,8 +123,7 @@ _llama_doctor() {
                     echo "[OK] MTP mode: assistant MTP available (${draft_model_path##*/}, draft tokens: 2)"
                 elif assistant_dir=$(_llama_find_local_assistant_dir_for_model "$model_path" 2>/dev/null); then
                     if _llama_binary_supports_gemma_assistant llama-cli; then
-                        echo "[WARN] MTP mode: assistant directory found (${assistant_dir##*/}) but no assistant GGUF file"
-                        echo "[INFO] MTP mode: llama.cpp needs assistant GGUF via --spec-draft-model"
+                        echo "[OK] MTP mode: assistant safetensors in ${assistant_dir##*/} (llama.cpp auto-detects with --spec-type draft-mtp, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
                     else
                         echo "[WARN] MTP mode: assistant directory found (${assistant_dir##*/})"
                         echo "[INFO] MTP mode: this llama.cpp build lacks gemma4_assistant support"
@@ -179,6 +178,7 @@ _llama_help() {
     echo "  bench <model>          Run benchmark"
     echo "  speed <model> [--tokens N] [--runs N]   Measure generation speed via llama-cli"
     echo "  pipe <model> <instr> [file]  Pipe stdin or file into model with instruction"
+    echo "  opencode|pi <model>    Register model in OpenCode + Pi configs"
     echo "  help                   Show this help"
     echo ""
     echo "Environment variables:"

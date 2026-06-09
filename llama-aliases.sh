@@ -17,11 +17,11 @@ if [ -z "$_LLAMA_LOADED" ]; then
         _LLAMA_DIR="$(cd "$(dirname "$0")" && pwd)"
     fi
 
-    # Source order: env -> helpers -> models -> opencode -> pull/list/rm -> server -> extras -> completions
+    # Source order: env -> helpers -> models -> harness -> pull/list/rm -> server -> extras -> completions
     source "$_LLAMA_DIR/llama.d/llama-env.sh"
     source "$_LLAMA_DIR/llama.d/llama-helpers.sh"
     source "$_LLAMA_DIR/llama.d/llama-models.sh"
-    source "$_LLAMA_DIR/llama.d/llama-opencode.sh"
+    source "$_LLAMA_DIR/llama.d/llama-harness.sh"
     source "$_LLAMA_DIR/llama.d/llama-pull.sh"
     source "$_LLAMA_DIR/llama.d/llama-list.sh"
     source "$_LLAMA_DIR/llama.d/llama-rm.sh"
@@ -53,7 +53,7 @@ llama() {
             echo "Use: llama run --mlx <huggingface-repo>"
             return 1
             ;;
-        opencode)     _llama_register_opencode "$@" ;;
+        opencode|pi)  _llama_register_integrations "$@" ;;
         logs)         _llama_logs "$@" ;;
         doctor)       _llama_doctor "$@" ;;
         completions)

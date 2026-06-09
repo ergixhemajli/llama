@@ -107,7 +107,7 @@ except Exception:
     echo "✓ Saved to $out_file"
 
     if [[ "$filename" != mmproj* ]]; then
-        _llama_register_opencode "$filename"
+        _llama_register_integrations "$filename"
         _llama_model_meta_set "$filename" "$hf_repo" "$(_llama_repo_tech "$hf_repo")"
     fi
 

@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 # llama-config.sh — Runtime config get/set/save/load
 
+_llama_sync_context_to_configs() {
+    local new_ctx="$1"
+
+    # Sync pi agent models.json
+    local pi_models="/Users/ergix/.pi/agent/models.json"
+    if [ -f "$pi_models" ] && command -v jq &>/dev/null; then
+        local updated
+        updated=$(jq --argjson ctx "$new_ctx" '
+            .providers."llama.cpp".models |= map(
+                .contextWindow = $ctx
+            )
+        ' "$pi_models") && echo "$updated" > "$pi_models"
+        echo "  ✓ Updated pi agent models.json (${new_ctx} tokens)"
+    fi
+
+    # Sync opencode config
+    local opencode_config="${XDG_CONFIG_HOME:-$HOME/.config}/opencode/opencode.json"
+    if [ -f "$opencode_config" ] && command -v jq &>/dev/null; then
+        local updated
+        updated=$(jq --argjson ctx "$new_ctx" '
+            .provider."llama.cpp".models |= with_entries(
+                .value.limit.context = $ctx
+            )
+        ' "$opencode_config") && echo "$updated" > "$opencode_config"
+        echo "  ✓ Updated opencode config (${new_ctx} tokens)"
+    fi
+}
+
 _llama_config() {
     local key="$1"
     local value="$2"
@@ -31,6 +59,7 @@ _llama_config() {
             if [[ "$value" =~ ^[0-9]+$ ]]; then
                 export LLM_DEFAULT_CTX="$value"
                 echo "✓ LLM_DEFAULT_CTX=$LLM_DEFAULT_CTX"
+                _llama_sync_context_to_configs "$value"
             else
                 echo "Usage: llama config LLM_DEFAULT_CTX <n>"
                 return 1
@@ -109,6 +138,9 @@ EOF
             source "$in_file"
             echo "✓ Loaded runtime config from: $in_file"
             echo "  Run 'llama config show' to verify"
+            if [[ -n "$LLM_DEFAULT_CTX" && "$LLM_DEFAULT_CTX" =~ ^[0-9]+$ ]]; then
+                _llama_sync_context_to_configs "$LLM_DEFAULT_CTX"
+            fi
             ;;
         *)
             echo "Unknown config key: $key"

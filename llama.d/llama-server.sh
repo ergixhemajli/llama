@@ -93,7 +93,8 @@ _llama_run() {
             runtime_label="GGUF + MTP (assistant: ${assistant_gguf##*/}, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
         elif [ -n "$assistant_dir" ]; then
             if _llama_binary_supports_gemma_assistant llama-cli; then
-                runtime_label="GGUF (plain - assistant dir present: ${assistant_dir##*/}, assistant GGUF unresolved)"
+                args+=(--spec-type draft-mtp --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
+                runtime_label="GGUF + MTP (assistant dir: ${assistant_dir##*/}, llama.cpp auto-detects safetensors, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
             else
                 runtime_label="GGUF (plain - assistant dir present: ${assistant_dir##*/}, llama.cpp lacks gemma4_assistant support)"
             fi
@@ -185,7 +186,8 @@ _llama_serve() {
             runtime_label="GGUF + MTP (assistant: ${assistant_gguf##*/}, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
         elif [ -n "$assistant_dir" ]; then
             if _llama_binary_supports_gemma_assistant llama-server; then
-                runtime_label="GGUF (plain - assistant dir present: ${assistant_dir##*/}, assistant GGUF unresolved)"
+                args+=(--spec-type draft-mtp --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
+                runtime_label="GGUF + MTP (assistant dir: ${assistant_dir##*/}, llama.cpp auto-detects safetensors, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
             else
                 runtime_label="GGUF (plain - assistant dir present: ${assistant_dir##*/}, llama.cpp lacks gemma4_assistant support)"
             fi
@@ -268,6 +270,7 @@ _llama_ps() {
         printf "  %-10s %s\n" "Status" "running"
         printf "  %-10s %s\n" "Endpoint" "$endpoint"
         printf "  %-10s %s\n" "PID(s)" "$(echo $pids | tr '\n' ' ')"
+        printf "  %-10s %s\n" "Context" "$LLM_DEFAULT_CTX"
         local loaded_models
         loaded_models=$(curl -sf "http://${LLM_SERVER_HOST}:${LLM_SERVER_PORT}/v1/models" 2>/dev/null | python3 -c '
 import json, sys
