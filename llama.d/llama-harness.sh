@@ -20,7 +20,7 @@ try:
         friendly = ' '.join(friendly.split('-'))
         models[model_id] = {
             'name': f'{friendly} (local)',
-            'limit': {'context': 32768, 'output': 8192}
+            'limit': {'context': int(os.environ.get('LLM_DEFAULT_CTX', '196608')), 'output': 8192}
         }
         with open(config_path, 'w') as f:
             json.dump(config, f, indent=2)
@@ -93,7 +93,7 @@ try:
             'name': friendly_name(model_id),
             'reasoning': True,
             'input': ['text'],
-            'contextWindow': 32768,
+            'contextWindow': int(os.environ.get('LLM_DEFAULT_CTX', '196608')),
             'maxTokens': 8192,
             'cost': {'input': 0, 'output': 0, 'cacheRead': 0, 'cacheWrite': 0}
         })
@@ -256,7 +256,7 @@ if target in ("opencode", "both"):
     for mid in added:
         models[mid] = {
             "name": friendly_name(mid),
-            "limit": {"context": 32768, "output": 8192},
+            "limit": {"context": int(os.environ.get("LLM_DEFAULT_CTX", "196608")), "output": 8192},
         }
 
     if target == "opencode" or os.path.exists(op_path):
@@ -294,7 +294,7 @@ if target in ("pi", "both"):
                     "name": friendly_name(mid),
                     "reasoning": True,
                     "input": ["text"],
-                    "contextWindow": 32768,
+                    "contextWindow": int(os.environ.get("LLM_DEFAULT_CTX", "196608")),
                     "maxTokens": 8192,
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                 }

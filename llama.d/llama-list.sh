@@ -98,7 +98,7 @@ if not os.path.isdir(models_dir):
 for entry in sorted(os.listdir(models_dir)):
     if not entry.endswith(".gguf"):
         continue
-    if not show_all and entry.startswith("mmproj"):
+    if not show_all and (entry.startswith("mmproj") or "-MTP-" in entry):
         continue
 
     path = os.path.join(models_dir, entry)

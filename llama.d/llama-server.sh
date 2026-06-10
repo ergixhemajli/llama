@@ -170,7 +170,7 @@ _llama_serve() {
         echo "$pid" > "$pidfile"
         echo "llama-server started (PID: $pid)"
         echo "Model: $model_path"
-        echo "Host: $LLM_SERVER_HOST:$LLM_SERVER_PORT"
+        echo "Host: http://localhost:$LLM_SERVER_PORT"
         echo "Logs: $log_file"
         return 0
     fi

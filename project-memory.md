@@ -31,3 +31,12 @@
 - Scripts at: `~/.llama/convert/` (converted_hf_to_gguf.py, conversion/, gguf-py/)
 - Requires: gguf, torch, transformers (all installed for Python 3.9 user site)
 - Python PATH includes ~/Library/Python/3.9/bin for user-installed packages
+
+## User Preferences / UX Conventions (durable)
+- Pulled model names should be concise in `llama list`; details belong in separate columns (QUANT/SIZE/PROVIDER/TECH/PATH), not in a long NAME field.
+- `llama ps`/serve UX should avoid long wrapped model titles that break readability.
+- `llama serve` model selection should be intuitive and interactive (arrow-key `fzf` picker) and based on the same table semantics as `llama list`.
+- Do NOT use numeric-only selection prompts for model choice.
+- Do NOT show duplicate/noisy preview pane in the `fzf` picker if it repeats the same row info.
+- `llama` tab-completion for serving should avoid suggesting MTP helper models directly (to reduce confusion).
+- `llama doctor` should detect missing Gemma mmproj files and explicitly tell user to rerun with the download flag to fetch missing files.
