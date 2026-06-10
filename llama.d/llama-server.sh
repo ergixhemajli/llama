@@ -1,329 +1,256 @@
 #!/usr/bin/env bash
-# llama-server.sh — Run, serve, stop, ps commands
+# llama-server.sh — Serve models via llama-server
 
-_llama_run() {
-    local force_mlx=0
-    local no_thinking="$LLM_NO_THINKING"
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            --mlx)
-                force_mlx=1
-                shift
-                ;;
-            --no-thinking)
-                no_thinking=1
-                shift
-                ;;
-            --thinking)
-                no_thinking=0
-                shift
-                ;;
-            *)
-                break
-                ;;
-        esac
-    done
-
-    local model_query="$1"; shift
-    [ -z "$model_query" ] && { echo "Usage: llama run [--no-thinking] <model> [args]"; return 1; }
-
-    if [ "$force_mlx" = "1" ]; then
-        if ! command -v python3 >/dev/null 2>&1; then
-            echo "Error: python3 is required for MLX mode" >&2
-            return 1
-        fi
-        if _llama_bool_is_true "$no_thinking"; then
-            echo "  Note: --no-thinking is currently ignored for MLX mode"
-        fi
-        echo "  Runtime: MLX"
-        echo "▶ Running MLX model: $model_query"
-        python3 -m "$_LLAMA_MLX_CHAT_MODULE" --model "$model_query" "$@"
-        return $?
-    fi
-
-    local model_path
-    if model_path=$(_llama_find_model "$model_query" 2>/dev/null); then
-        _llama_model_meta_backfill_for_file "$model_path"
-        :
-    elif [[ "$model_query" == */* ]]; then
-        if ! command -v python3 >/dev/null 2>&1; then
-            echo "Error: python3 is required for MLX mode" >&2
-            return 1
-        fi
-        if _llama_bool_is_true "$no_thinking"; then
-            echo "  Note: --no-thinking is currently ignored for MLX mode"
-        fi
-        echo "  Runtime: MLX"
-        echo "▶ Running MLX model: $model_query"
-        python3 -m "$_LLAMA_MLX_CHAT_MODULE" --model "$model_query" "$@"
-        return $?
-    else
-        _llama_find_model "$model_query"
+_llama_pick_serve_model_from_list() {
+    if ! command -v fzf >/dev/null 2>&1; then
+        echo "Error: no model provided and fzf is not installed for interactive selection." >&2
+        echo "Install fzf or run: llama list" >&2
+        echo "Then pass a model explicitly: llama serve <model>" >&2
         return 1
     fi
 
-    local mmproj_path=""
-    if mmproj_path=$(_llama_find_mmproj "$model_path"); then
-        echo "  Vision projector: ${mmproj_path##*/}"
-    fi
-    local runtime_label="GGUF (plain - no MTP path found)"
-    local assistant_dir=""
-    assistant_dir=$(_llama_find_local_assistant_dir_for_model "$model_path" || true)
-    echo "▶ Running: ${model_path##*/}"
-    local args=(
-        --model "$model_path"
-        --ctx-size "$LLM_DEFAULT_CTX"
-        --n-gpu-layers "$LLM_DEFAULT_GPU_LAYERS"
-        --cache-type-k "$(_llama_resolve_cache_type_k)"
-        --cache-type-v "$(_llama_resolve_cache_type_v)"
-        --threads "$(_llama_cpu_threads)"
-        -cnv
-    )
-    if _llama_binary_supports_mtp llama-cli; then
-        local draft_model_path=""
-        local assistant_gguf=""
-        if [ "$(_llama_model_tech_for_file "$model_path")" = "MTP" ]; then
-            args+=(--spec-type draft-mtp --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
-            runtime_label="GGUF + MTP (embedded, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
-        elif draft_model_path=$(_llama_find_draft_model "$model_path"); then
-            args+=(--spec-type draft-mtp --spec-draft-model "$draft_model_path" --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
-            runtime_label="GGUF + MTP (assistant: ${draft_model_path##*/}, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
-        elif _llama_binary_supports_gemma_assistant llama-cli && assistant_gguf=$(_llama_resolve_assistant_gguf_for_model "$model_path" 2>/dev/null); then
-            args+=(--spec-type draft-mtp --spec-draft-model "$assistant_gguf" --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
-            runtime_label="GGUF + MTP (assistant: ${assistant_gguf##*/}, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
-        elif [ -n "$assistant_dir" ]; then
-            if _llama_binary_supports_gemma_assistant llama-cli; then
-                args+=(--spec-type draft-mtp --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
-                runtime_label="GGUF + MTP (assistant dir: ${assistant_dir##*/}, llama.cpp auto-detects safetensors, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
-            else
-                runtime_label="GGUF (plain - assistant dir present: ${assistant_dir##*/}, llama.cpp lacks gemma4_assistant support)"
-            fi
-        fi
-    else
-        runtime_label="GGUF (plain - draft-mtp unavailable in llama.cpp binary)"
-    fi
-    echo "  Runtime: $runtime_label"
-    _llama_bool_is_true "$no_thinking" && args+=(--chat-template-kwargs '{"enable_thinking":false}')
-    [ -n "$mmproj_path" ] && args+=(--mmproj "$mmproj_path")
-    llama-cli "${args[@]}" "$@"
+    [ -t 0 ] || {
+        echo "Error: interactive model selection requires a TTY. Pass a model explicitly." >&2
+        return 1
+    }
+
+    local selected
+    selected=$(_llama_list \
+        | awk 'NF > 0' \
+        | grep -v '^NAME[[:space:]]' \
+        | grep -v '^-[-[:space:]]*$' \
+        | grep -v 'mmproj' \
+        | grep -v -- '-MTP-' \
+        | grep -v 'assistant' \
+        | fzf --ansi --height=70% --layout=reverse \
+            --prompt='serve model > ' \
+            --header='Select model from llama list (PATH used internally)') || return 1
+
+    printf '%s\n' "$selected" | sed -E 's/.* (\/[^ ]+\.gguf)$/\1/'
 }
 
 _llama_serve() {
-    local detach=0
-    local no_thinking="$LLM_NO_THINKING"
+    local detached=0
+    local mtp=0
+    local mtp_model_query=""
+    local mtp_draft_n_max="${_LLAMA_MTP_DRAFT_N_MAX:-2}"
+    local model_query=""
+    local extra_args=()
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -d|--detach)
-                detach=1
+            -d|--detached)
+                detached=1
                 shift
                 ;;
-            --no-thinking)
-                no_thinking=1
+            --mtp)
+                mtp=1
                 shift
                 ;;
-            --thinking)
-                no_thinking=0
+            --mtp-model)
+                mtp=1
                 shift
+                if [ -z "${1:-}" ]; then
+                    echo "Error: --mtp-model requires a model path or query"
+                    return 1
+                fi
+                mtp_model_query="$1"
+                shift
+                ;;
+            --mtp-draft-n-max)
+                mtp=1
+                shift
+                if [[ ! "${1:-}" =~ ^[0-9]+$ ]]; then
+                    echo "Error: --mtp-draft-n-max requires an integer"
+                    return 1
+                fi
+                mtp_draft_n_max="$1"
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: llama serve [-d|--detached] [--mtp] [--mtp-model <draft_model>] [--mtp-draft-n-max <n>] [model_query] [additional llama-server args...]"
+                echo "If model_query is omitted, an interactive picker is shown (fzf, based on llama list)."
+                return 0
                 ;;
             *)
-                break
+                if [ -z "$model_query" ] && [[ "$1" != -* ]]; then
+                    model_query="$1"
+                else
+                    extra_args+=("$1")
+                fi
+                shift
                 ;;
         esac
     done
 
-    local model_query="$1"; shift
-    [ -z "$model_query" ] && { echo "Usage: llama serve [-d] [--no-thinking] <model> [args]"; return 1; }
+    local model_path=""
+    if [ -z "$model_query" ]; then
+        model_path=$(_llama_pick_serve_model_from_list) || return 1
+        model_query="${model_path##*/}"
+        model_query="${model_query%.gguf}"
+        echo "Selected model: $model_query"
+    else
+        # Find model
+        model_path=$(_llama_find_model "$model_query")
+        if [ -z "$model_path" ]; then
+            echo "Model not found: $model_query"
+            return 1
+        fi
+    fi
 
-    local passthrough=()
-    while [[ $# -gt 0 ]]; do
-        case "$1" in
-            -d|--detach) detach=1 ;;
-            --no-thinking) no_thinking=1 ;;
-            --thinking) no_thinking=0 ;;
-            *) passthrough+=("$1") ;;
-        esac
-        shift
-    done
+    local pidfile="$LLM_MODELS_DIR/.llama-server.pid"
 
-    local model_path
-    model_path=$(_llama_find_model "$model_query") || return 1
-    _llama_model_meta_backfill_for_file "$model_path"
-    local mmproj_path
-    mmproj_path=$(_llama_find_mmproj "$model_path") || {
-        local _base; _base=$(basename "$model_path" .gguf)
-        local _stripped; _stripped=$(echo "$_base" | sed -E 's/[-_]((UD|UDT)-)?Q[0-9]+_[A-Z0-9]+(_[A-Z0-9]+)*$//')
-        echo "  WARNING: No mmproj found for $model_path"
-        echo "  Expected: mmproj-F16-${_stripped}.gguf"
-        mmproj_path=""
-    }
-    [ -n "$mmproj_path" ] && echo "  Vision projector: ${mmproj_path##*/}"
-    local runtime_label="GGUF (plain - no MTP path found)"
-    local assistant_dir=""
-    assistant_dir=$(_llama_find_local_assistant_dir_for_model "$model_path" || true)
-    echo "▶ Serving: ${model_path##*/}"
+    # Check if already running
+    if [ -f "$pidfile" ]; then
+        local old_pid
+        old_pid=$(cat "$pidfile")
+        if kill -0 "$old_pid" 2>/dev/null; then
+            echo "llama-server already running (PID: $old_pid)"
+            echo "Use 'llama stop' to stop it first, or use 'llama ps' to check"
+            return 1
+        else
+            echo "Stale PID file found, removing"
+            rm -f "$pidfile"
+        fi
+    fi
 
-    local args=(
+    # Start server
+    local cmd="llama-server"
+    local log_file="${LLM_SERVER_LOG_FILE:-$HOME/.llama/llama-server.log}"
+    local cmd_args=(
         --model "$model_path"
         --ctx-size "$LLM_DEFAULT_CTX"
         --n-gpu-layers "$LLM_DEFAULT_GPU_LAYERS"
-        --cache-type-k "$(_llama_resolve_cache_type_k)"
-        --cache-type-v "$(_llama_resolve_cache_type_v)"
-        --threads "$(_llama_cpu_threads)"
+        --cache-type-k "$LLM_DEFAULT_CACHE_TYPE_K"
+        --cache-type-v "$LLM_DEFAULT_CACHE_TYPE_V"
         --host "$LLM_SERVER_HOST"
         --port "$LLM_SERVER_PORT"
     )
-    if _llama_binary_supports_mtp llama-server; then
+
+    if [ "$mtp" -eq 1 ]; then
+        if ! _llama_binary_supports_mtp "$cmd"; then
+            echo "Error: this llama-server build does not support MTP (missing draft-mtp)."
+            return 1
+        fi
+
         local draft_model_path=""
-        local assistant_gguf=""
-        if [ "$(_llama_model_tech_for_file "$model_path")" = "MTP" ]; then
-            args+=(--spec-type draft-mtp --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
-            runtime_label="GGUF + MTP (embedded, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
-        elif draft_model_path=$(_llama_find_draft_model "$model_path"); then
-            args+=(--spec-type draft-mtp --spec-draft-model "$draft_model_path" --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
-            runtime_label="GGUF + MTP (assistant: ${draft_model_path##*/}, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
-        elif _llama_binary_supports_gemma_assistant llama-server && assistant_gguf=$(_llama_resolve_assistant_gguf_for_model "$model_path" 2>/dev/null); then
-            args+=(--spec-type draft-mtp --spec-draft-model "$assistant_gguf" --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
-            runtime_label="GGUF + MTP (assistant: ${assistant_gguf##*/}, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
-        elif [ -n "$assistant_dir" ]; then
-            if _llama_binary_supports_gemma_assistant llama-server; then
-                args+=(--spec-type draft-mtp --spec-draft-n-max "$_LLAMA_MTP_DRAFT_N_MAX")
-                runtime_label="GGUF + MTP (assistant dir: ${assistant_dir##*/}, llama.cpp auto-detects safetensors, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
-            else
-                runtime_label="GGUF (plain - assistant dir present: ${assistant_dir##*/}, llama.cpp lacks gemma4_assistant support)"
-            fi
+        if [ -n "$mtp_model_query" ]; then
+            draft_model_path=$(_llama_find_model "$mtp_model_query") || return 1
+            cmd_args+=(--spec-type draft-mtp --spec-draft-model "$draft_model_path" --spec-draft-n-max "$mtp_draft_n_max")
+            echo "MTP: enabled with explicit draft model (${draft_model_path##*/}, n-max=$mtp_draft_n_max)"
+        elif [ "$(_llama_model_tech_for_file "$model_path")" = "MTP" ]; then
+            cmd_args+=(--spec-type draft-mtp --spec-draft-n-max "$mtp_draft_n_max")
+            echo "MTP: enabled (embedded/marked model, n-max=$mtp_draft_n_max)"
+        elif draft_model_path=$(_llama_find_draft_model "$model_path" 2>/dev/null); then
+            cmd_args+=(--spec-type draft-mtp --spec-draft-model "$draft_model_path" --spec-draft-n-max "$mtp_draft_n_max")
+            echo "MTP: enabled with paired draft model (${draft_model_path##*/}, n-max=$mtp_draft_n_max)"
+        elif draft_model_path=$(_llama_resolve_assistant_gguf_for_model "$model_path" 2>/dev/null); then
+            cmd_args+=(--spec-type draft-mtp --spec-draft-model "$draft_model_path" --spec-draft-n-max "$mtp_draft_n_max")
+            echo "MTP: enabled with assistant draft model (${draft_model_path##*/}, n-max=$mtp_draft_n_max)"
+        else
+            echo "Error: --mtp requested, but no compatible draft model path was found for ${model_path##*/}."
+            echo "Hint: pass --mtp-model <draft-model> explicitly or use a model marked as MTP."
+            return 1
         fi
-    else
-        runtime_label="GGUF (plain - draft-mtp unavailable in llama.cpp binary)"
     fi
-    echo "  Runtime: $runtime_label"
-    _llama_bool_is_true "$no_thinking" && args+=(--chat-template-kwargs '{"enable_thinking":false}')
-    [ -n "$mmproj_path" ] && args+=(--mmproj "$mmproj_path")
 
-    if [ "$detach" = "1" ]; then
-        local log_file="${LLM_SERVER_LOG_FILE:-$HOME/.llama/llama-server.log}"
-        local ready_timeout="${LLM_SERVER_READY_TIMEOUT:-30}"
-        local min_spinner_steps="${LLM_SERVER_MIN_SPINNER_STEPS:-3}"
-        mkdir -p "$(dirname "$log_file")"
-        : > "$log_file"
-        nohup llama-server "${args[@]}" "${passthrough[@]}" > "$log_file" 2>&1 &
+    cmd_args+=("${extra_args[@]}")
+
+    if [ "$detached" -eq 1 ]; then
+        "$cmd" "${cmd_args[@]}" >>"$log_file" 2>&1 &
+
         local pid=$!
-        disown "$pid" 2>/dev/null || true
-        local i=0
-        local start_time=$SECONDS
-        while true; do
-            printf "\r▶ Starting server in background %s" "$(_llama_spinner_char "$i")"
-            i=$((i + 1))
-            if _llama_server_running && [ "$i" -ge "$min_spinner_steps" ]; then
-                printf "\r✓ Server is ready for requests                      \n"
-                echo "  PID: $pid"
-                echo "  URL: http://${LLM_SERVER_HOST}:${LLM_SERVER_PORT}"
-                echo "  Log: $log_file"
-                break
-            fi
-            if ! kill -0 "$pid" 2>/dev/null; then
-                printf "\r✗ Server exited before becoming ready               \n"
-                echo "  PID: $pid"
-                echo "  Log: $log_file"
-                return 1
-            fi
-            if [ $((SECONDS - start_time)) -ge "$ready_timeout" ]; then
-                printf "\r! Server still starting (timeout ${ready_timeout}s) \n"
-                echo "  PID: $pid"
-                echo "  URL: http://${LLM_SERVER_HOST}:${LLM_SERVER_PORT}"
-                echo "  Log: $log_file"
-                break
-            fi
-            sleep 0.2
-        done
-    else
-        llama-server "${args[@]}" "${passthrough[@]}"
+        sleep 0.2
+        if ! kill -0 "$pid" 2>/dev/null; then
+            echo "Failed to start llama-server (exited immediately)."
+            echo "Check logs: $log_file"
+            return 1
+        fi
+
+        echo "$pid" > "$pidfile"
+        echo "llama-server started (PID: $pid)"
+        echo "Model: $model_path"
+        echo "Host: $LLM_SERVER_HOST:$LLM_SERVER_PORT"
+        echo "Logs: $log_file"
+        return 0
     fi
+
+    echo "Starting llama-server in foreground (Ctrl+C to stop)…"
+    "$cmd" "${cmd_args[@]}"
 }
 
+# Stop llama-server
 _llama_stop() {
-    if _llama_server_running; then
-        local pids
-        pids=$(pgrep -f "llama-server" 2>/dev/null)
-        if [ -n "$pids" ]; then
-            echo "▶ Stopping llama-server (PID(s): $(echo $pids | tr '\n' ' '))"
-            echo "$pids" | xargs kill 2>/dev/null
-            sleep 1
-            if pgrep -f "llama-server" > /dev/null 2>&1; then
-                echo "$pids" | xargs kill -9 2>/dev/null
-            fi
-            echo "✓ Server stopped"
+    local pidfile="$LLM_MODELS_DIR/.llama-server.pid"
+    if [ -f "$pidfile" ]; then
+        local pid
+        pid=$(cat "$pidfile")
+        if kill -0 "$pid" 2>/dev/null; then
+            kill "$pid"
+            rm -f "$pidfile"
+            echo "llama-server stopped (PID: $pid)"
+        else
+            echo "Process $pid not running, removing stale PID file"
+            rm -f "$pidfile"
         fi
     else
-        echo "No server running on http://${LLM_SERVER_HOST}:${LLM_SERVER_PORT}"
+        echo "llama-server not running"
     fi
 }
 
+# List running llama-server instances
 _llama_ps() {
-    echo ""
-    echo "llama ps"
-    echo ""
-    if _llama_server_running; then
-        local endpoint="http://${LLM_SERVER_HOST}:${LLM_SERVER_PORT}"
-        local pids
-        pids=$(pgrep -f "llama-server" 2>/dev/null)
-
-        printf "  %-10s %s\n" "Status" "running"
-        printf "  %-10s %s\n" "Endpoint" "$endpoint"
-        printf "  %-10s %s\n" "PID(s)" "$(echo $pids | tr '\n' ' ')"
-        printf "  %-10s %s\n" "Context" "$LLM_DEFAULT_CTX"
-        local loaded_models
-        loaded_models=$(curl -sf "http://${LLM_SERVER_HOST}:${LLM_SERVER_PORT}/v1/models" 2>/dev/null | python3 -c '
-import json, sys
-try:
-    data = json.load(sys.stdin)
-    models = [m.get("id", "?") for m in data.get("data", [])]
-    for m in models:
-        print(m)
-except Exception:
-    pass
-' 2>/dev/null)
-        if [ -n "$loaded_models" ]; then
-            local first=1
-            while IFS= read -r model_id; do
-                [ -z "$model_id" ] && continue
-                if [ "$first" = "1" ]; then
-                    printf "  %-10s %s\n" "Model(s)" "$model_id"
-                    first=0
-                else
-                    printf "  %-10s %s\n" "" "$model_id"
-                fi
-            done <<< "$loaded_models"
+    local show_args=0
+    for arg in "$@"; do
+        if [ "$arg" = "--args" ]; then
+            show_args=1
         fi
-        echo ""
+    done
 
-        if [ -n "$pids" ]; then
-            echo "  Process metrics"
-            echo "  ---------------------------------------------"
-            echo "  PID    CPU%   MEM%   MEM(GB)   ELAPSED"
-            local total_ram_gb
-            total_ram_gb=$(python3 -c "import subprocess; v=subprocess.check_output(['sysctl','-n','hw.memsize']).decode().strip(); print(round(int(v)/(1024**3),1))" 2>/dev/null)
-            while IFS= read -r pid; do
-                [ -z "$pid" ] && continue
-                ps -p "$pid" -o pid=,pcpu=,pmem=,rss=,etime= | python3 -c '
-import sys
-line=sys.stdin.read().strip()
-if not line:
-    raise SystemExit(0)
-parts=line.split()
-if len(parts) < 5:
-    raise SystemExit(0)
-pid, cpu_s, mem_s, rss_kb_s, elapsed = parts[0], parts[1], parts[2], parts[3], parts[4]
-cpu=float(cpu_s.replace(",","."))
-mem=float(mem_s.replace(",","."))
-rss_gb=int(rss_kb_s)/(1024*1024)
-print(f"  {pid:<6} {cpu:>5.1f}  {mem:>5.1f}  {rss_gb:>7.2f}   {elapsed}")
-' 2>/dev/null
-            done <<< "$pids"
-            echo "  ---------------------------------------------"
-        fi
+    local proc
+    proc=$(ps aux 2>/dev/null | grep llama-server | grep -v grep)
 
-    else
-        printf "  %-10s %s\n" "Status" "not running"
+    if [ -z "$proc" ]; then
+        echo "No llama-server processes running"
+        return
     fi
-    echo ""
+
+    # Print header
+    printf "%-8s %-40s %-8s %-8s %-6s %-6s\n" "PID" "MODEL" "PORT" "CTX" "CPU%" "MEM%"
+    printf "%-8s %-40s %-8s %-8s %-6s %-6s\n" "--------" "----------------------------------------" "--------" "--------" "------" "------"
+
+    # Parse each process line
+    while IFS= read -r line; do
+        local pid user cpu mem vsz rss tty stat start time cmd
+        read -r user pid cpu mem vsz rss tty stat start time cmd <<< "$line"
+
+        # Extract model name from --model flag
+        local model_name="unknown"
+        if echo "$cmd" | grep -q -- '--model'; then
+            model_name=$(echo "$cmd" | grep -o -- '--model [^ ]*' | awk '{print $2}')
+            model_name=$(basename "$model_name" .gguf)
+            model_name=$(echo "$model_name" | sed -E 's/[-_]((UD|UDT)-)?(IQ[0-9]+_[A-Z0-9]+|Q[0-9]+_[A-Z0-9]+|Q[0-9]+_[A-Z0-9]+_[A-Z0-9]+|Q[0-9]+_[0-9]+|BF16|F16)$//')
+            model_name=$(echo "$model_name" | sed -E 's/.*-GGUF-//')
+            model_name=$(echo "$model_name" | sed -E 's/[-_](MTP|assistant)$//I')
+        fi
+
+        # Extract context size from --ctx-size flag
+        local ctx_size="?"
+        if echo "$cmd" | grep -q -- '--ctx-size'; then
+            ctx_size=$(echo "$cmd" | grep -o -- '--ctx-size [^ ]*' | awk '{print $2}')
+        fi
+
+        # Extract port from --port flag
+        local port="?"
+        if echo "$cmd" | grep -q -- '--port'; then
+            port=$(echo "$cmd" | grep -o -- '--port [^ ]*' | awk '{print $2}')
+        fi
+
+        printf "%-8s %-40s %-8s %-8s %-6s %-6s\n" "$pid" "$model_name" "$port" "$ctx_size" "$cpu" "$mem"
+
+        # Show args if --args flag was passed
+        if [ "$show_args" -eq 1 ]; then
+            echo "  PID $pid: $cmd"
+        fi
+    done <<< "$proc"
 }

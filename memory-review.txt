@@ -1,0 +1,27 @@
+# Memory Review Summary
+
+## User Profile
+- macOS Tahoe 26.5 (25F71), MacBook Pro 16" M5 Max 2026 (32GB+ GPU RAM)
+- zsh + p10k theme, locale nb_NO.UTF-8
+- Uses Homebrew + pip (system Python 3.9.6 at /Users/ergix/Library/Python/3.9/bin)
+- Prefers not building from source when binaries suffice
+- Has sophisticated llama.cpp wrapper at ~/.llama/ with modular bash scripts in llama.d/
+
+## Project Conventions
+- ~/.llama/ structure: llama-models/ (GGUF), llama.d/ (modular scripts), llama-aliases.sh (router), convert/ (conversion tools)
+- Server on 127.0.0.1:11434, env vars: LLM_DEFAULT_CTX=196608, LLM_DEFAULT_GPU_LAYERS=99, etc.
+- HuggingFace default user: unsloth
+- Subcommand pattern: llama serve, llama convert, llama update-convert, etc.
+
+## Failures & Lessons
+1. `_llama_binary_supports_gemma_assistant()` grepped for `gemma4_assistant` in `llama-cli --help` — that string is never a CLI flag. Fix: check for `draft-mtp` instead.
+2. Gemma assistant MTP requires safetensors → GGUF conversion; llama.cpp loads them via `--spec-type draft-mtp` but cannot natively read safetensors dirs.
+3. `convert_hf_to_gguf.py` requires torch + transformers + gguf Python packages (system Python 3.9 needs pip install).
+4. Missing shell functions in llama-aliases.sh router (_llama_stop, _llama_complete, _llama_ps, _llama_run, _llama_serve) causes "command not found" errors.
+5. Running scripts from wrong directory (relative _LLAMA_DIR) causes "Not a directory" sourcing errors — always resolve to absolute path.
+6. macOS system Python 3.9.6 compiles urllib3 with LibreSSL 2.8.3 (NotOpenSSLWarning).
+
+## Technical Insights
+- gemma4 MTP support is internal to llama.cpp binary, exposed only via `--spec-type draft-mtp` flag, not a dedicated CLI flag
+- Assistant models for MTP: gemma-4-26B-A4B-it, gemma-4-31B-it, gemma-4-E4B-it (AtomicChat repos)
+- Multimodal (mmproj) works correctly in serve mode; MTP assistant loading is the bottleneck

@@ -1,28 +1,12 @@
 #!/usr/bin/env bash
-# llama-helpers.sh - Utility functions
-
-_llama_bool_is_true() {
-    case "$1" in
-        1|true|TRUE|yes|YES|on|ON) return 0 ;;
-        *) return 1 ;;
-    esac
-}
+# llama-helpers.sh — Shared helper functions for llama-aliases
 
 _llama_lower() {
-    printf '%s' "$1" | tr '[:upper:]' '[:lower:]'
-}
-
-_llama_spinner_char() {
-    case $(( $1 % 4 )) in
-        0) printf '|' ;;
-        1) printf '/' ;;
-        2) printf '-' ;;
-        3) printf '\\' ;;
-    esac
+    printf '%s' "$*" | tr '[:upper:]' '[:lower:]'
 }
 
 _llama_cpu_threads() {
-    if [ -n "$LLM_DEFAULT_THREADS" ]; then
+    if [ -n "${LLM_DEFAULT_THREADS:-}" ]; then
         echo "$LLM_DEFAULT_THREADS"
         return
     fi
@@ -37,8 +21,26 @@ _llama_cpu_threads() {
     nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4
 }
 
+_llama_resolve_cache_type_k() {
+    if [ -n "${LLM_DEFAULT_CACHE_TYPE_K:-}" ]; then
+        echo "$LLM_DEFAULT_CACHE_TYPE_K"
+    else
+        echo "q8_0"
+    fi
+}
+
+_llama_resolve_cache_type_v() {
+    if [ -n "${LLM_DEFAULT_CACHE_TYPE_V:-}" ]; then
+        echo "$LLM_DEFAULT_CACHE_TYPE_V"
+    else
+        echo "q8_0"
+    fi
+}
+
 _llama_server_running() {
-    curl -sf "http://${LLM_SERVER_HOST}:${LLM_SERVER_PORT}/health" > /dev/null 2>&1
+    local host="${LLM_SERVER_HOST:-127.0.0.1}"
+    local port="${LLM_SERVER_PORT:-11434}"
+    curl -s --max-time 2 "http://${host}:${port}/v1/models" >/dev/null 2>&1
 }
 
 _llama_binary_supports_mtp() {
@@ -46,9 +48,9 @@ _llama_binary_supports_mtp() {
     "$bin" --help 2>/dev/null | grep -q -- "draft-mtp"
 }
 
-_llama_binary_supports_gemma_assistant() { 
-    # gemma4_assistant is not a CLI flag — it's handled internally via draft-mtp
-    _llama_binary_supports_mtp "$@"
+_llama_binary_supports_gemma_assistant() {
+    local bin="$1"
+    "$bin" --help 2>/dev/null | grep -q -- "draft-mtp"
 }
 
 _llama_supports_reasoning() {

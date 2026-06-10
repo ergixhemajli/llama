@@ -17,7 +17,7 @@ if [ -z "$_LLAMA_LOADED" ]; then
         _LLAMA_DIR="$(cd "$(dirname "$0")" && pwd)"
     fi
 
-    # Source order: env -> helpers -> models -> harness -> pull/list/rm -> server -> extras -> completions
+    # Source order: env -> helpers -> models -> harness -> pull/list/rm -> server -> config -> bench -> convert -> extras -> completions
     source "$_LLAMA_DIR/llama.d/llama-env.sh"
     source "$_LLAMA_DIR/llama.d/llama-helpers.sh"
     source "$_LLAMA_DIR/llama.d/llama-models.sh"
@@ -27,10 +27,18 @@ if [ -z "$_LLAMA_LOADED" ]; then
     source "$_LLAMA_DIR/llama.d/llama-rm.sh"
     source "$_LLAMA_DIR/llama.d/llama-server.sh"
     source "$_LLAMA_DIR/llama.d/llama-config.sh"
+    source "$_LLAMA_DIR/llama.d/llama-stop.sh"
     source "$_LLAMA_DIR/llama.d/llama-bench.sh"
+    source "$_LLAMA_DIR/llama.d/llama-convert.sh"
     source "$_LLAMA_DIR/llama.d/llama-extras.sh"
-    source "$_LLAMA_DIR/llama.d/llama-completions.sh"
 fi
+
+# Always (re)load completions for the current shell session.
+# This is outside _LLAMA_LOADED so completion bindings survive compinit re-initialization.
+if [ -z "${_LLAMA_DIR:-}" ]; then
+    _LLAMA_DIR="$HOME/.llama"
+fi
+source "$_LLAMA_DIR/llama.d/llama-completions.sh"
 
 # Subcommand router
 llama() {
@@ -40,7 +48,7 @@ llama() {
         serve)        _llama_serve "$@" ;;
         run)          _llama_run "$@" ;;
         stop)         _llama_stop ;;
-        ps)           _llama_ps ;;
+        ps)           _llama_ps "$@" ;;
         pull|download) _llama_pull "$@" ;;
         list|ls)      _llama_list "$@" ;;
         rm|remove)    _llama_rm "$@" ;;
@@ -53,7 +61,7 @@ llama() {
             echo "Use: llama run --mlx <huggingface-repo>"
             return 1
             ;;
-        opencode|pi)  _llama_register_integrations "$@" ;;
+        opencode|pi)  _llama_register_integrations "$cmd" "$@" ;;
         logs)         _llama_logs "$@" ;;
         doctor)       _llama_doctor "$@" ;;
         completions)
@@ -61,8 +69,22 @@ llama() {
             echo "Run 'complete -p llama' (bash) or 'which _llama_complete' (zsh) to verify."
             ;;
         update)
-            echo "'llama update' is not implemented in this modular build."
-            return 1
+            _llama_update_convert "$@"
+            ;;
+        convert)
+            _llama_convert "$@"
+            ;;
+        update-convert)
+            _llama_update_convert "$@"
+            ;;
+        convert-mtp)
+            _llama_convert_mtp "$@"
+            ;;
+        convert-assistant)
+            _llama_convert_mtp_from_assistant_dir "$@"
+            ;;
+        check-convert)
+            _llama_check_convert_prereqs
             ;;
         --help|-h|help)
             if declare -F _llama_help >/dev/null 2>&1; then

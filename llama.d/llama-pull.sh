@@ -47,8 +47,15 @@ import json, sys
 try:
     data = json.load(sys.stdin)
     siblings = data.get('siblings', [])
-    ggufs = [f['rfilename'] for f in siblings if f['rfilename'].endswith('.gguf') and not f['rfilename'].startswith('mmproj')]
-    for f in sorted(ggufs): print(f)
+    ggufs_all = [f['rfilename'] for f in siblings if f['rfilename'].endswith('.gguf') and not f['rfilename'].startswith('mmproj')]
+
+    # Prefer top-level runnable checkpoints; avoid nested MTP draft assets by default.
+    preferred = [f for f in ggufs_all if '/' not in f and not f.lower().startswith('mtp/')]
+    fallback = [f for f in ggufs_all if not f.lower().startswith('mtp/')]
+    ggufs = preferred or fallback or ggufs_all
+
+    for f in sorted(ggufs):
+        print(f)
 except Exception:
     sys.exit(1)
 " 2>/dev/null)
@@ -63,6 +70,22 @@ except Exception:
         echo "▶ No GGUF files found; downloading full repo (MLX or non-GGUF): $hf_repo…"
         hf download "$hf_repo" --local-dir "$mlx_out_dir"
         echo "✓ Saved to $mlx_out_dir"
+
+        # Optional auto-convert path for non-GGUF repos
+        if declare -F _llama_convert >/dev/null 2>&1; then
+            echo ""
+            printf "No GGUF available in repo. Convert downloaded repo to GGUF now? [Y/n] "
+            local do_convert
+            read -r do_convert
+            if [[ "${do_convert:-Y}" =~ ^[Yy]$ ]]; then
+                if declare -F _llama_check_convert_prereqs >/dev/null 2>&1 && ! _llama_check_convert_prereqs; then
+                    echo "Skipping conversion: missing conversion prerequisites." >&2
+                else
+                    echo "▶ Converting $mlx_out_dir to GGUF…"
+                    _llama_convert "$mlx_out_dir"
+                fi
+            fi
+        fi
         return
     fi
 
@@ -90,8 +113,7 @@ except Exception:
 
     local dl_url="https://huggingface.co/${hf_repo}/resolve/main/${chosen}"
     local chosen_base="${chosen##*/}"
-    local chosen_stem="${chosen_base%.gguf}"
-    local filename="${hf_repo##*/}-${chosen_stem}.gguf"
+    local filename="$chosen_base"
     local out_file="$LLM_MODELS_DIR/$filename"
     echo "▶ Downloading $chosen…"
     if command -v hf >/dev/null 2>&1; then

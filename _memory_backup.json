@@ -1,0 +1,35 @@
+# User Preferences & Context
+- MacBook Pro 16" M5 Max, macOS Tahoe 26.5, zsh with p10k
+- Custom llama wrapper at ~/.llama/ with modular files in llama.d/
+- Prefers minimal/no redundant output; doesn't want informational fallback messages like "▶ Fallback: downloading..."
+- Wants simple, direct tool behavior
+
+# Project Conventions
+- Internal shell functions prefixed with _llama_
+- llama-aliases.sh is main entry point, sources modular llama.d/*.sh files
+- Subcommands: run, serve, list, pull, rm, stop, ps, logs, doctor, config, bench, speed, pipe, convert, update-convert, check-convert, help
+- llama convert auto-detects assistant/MTP vs full conversion
+- llama pull offers conversion when no GGUF available in repo
+- Models stored in ~/.llama/llama-models/
+- Convert scripts in ~/.llama/convert/ (convert_hf_to_gguf.py, gguf-py/, conversion/, requirements.txt)
+
+# Python Environment
+- python3 at /usr/bin/python3, version 3.9.6 (macOS system Python)
+- pip packages install to /Users/ergix/Library/Python/3.9/bin (not on PATH by default)
+- Required: gguf, torch, transformers
+- LibreSSL 2.8.3 compiled into Python; urllib3 v2 warning: "compiled with LibreSSL 2.8.3"
+
+# Failures & Fixes
+- [failure] _llama_binary_supports_gemma_assistant() grepped for "gemma4_assistant" in --help, but it's not a CLI flag. Fix: grep for "draft-mtp" instead.
+- [failure] Function named _llama_server in llama-server.sh but aliases called _llama_serve. Fix: rename function to _llama_serve.
+- [failure] Inverted if in llama-server.sh: returned error when model WAS found. Fix: correct condition.
+- [failure] Fallback _llama_complete() stub in llama-completions.sh overrode real zsh completion handler, breaking tab autocomplete entirely. Fix: remove stub.
+- [failure] Over-constrained zsh completion (too restrictive fallback), broke standard completion. Fix: use _default fallback for unknown positions.
+- [failure] convert_hf_to_gguf.py does not support Gemma 4 assistant MTP conversion yet. Workaround: use pre-converted assistant GGUF from AtomicChat org.
+- [tool-quirk] python3 -m pip installs to /Users/ergix/Library/Python/3.9/bin which is not on PATH; must add to PATH explicitly in wrapper scripts.
+
+# llama.cpp Binary Info
+- Homebrew version: 9550 (commit f0156d140)
+- Supports draft-mtp but NOT gemma4_assistant architecture loading
+- Multimodal (mmproj) works with serve
+- Gemma assistant MTP crashes with "unknown model architecture: 'gemma4_assistant'"

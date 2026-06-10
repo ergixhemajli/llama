@@ -1,0 +1,30 @@
+# Project: llama-aliases.sh
+
+## Structure
+- `/Users/ergix/.llama/llama-aliases.sh` — main entry point / subcommand router
+- `/Users/ergix/.llama/llama.d/` — modular script files
+  - `llama-server.sh` — llama-server commands (serve, ps)
+  - `llama-helpers.sh` — shared helper functions
+  - `llama-models.sh`, `llama-harness.sh`, `llama-pull.sh`, `llama-list.sh`, etc.
+- `/Users/ergix/.llama/llama-models/` — model storage directory
+
+## Key patterns
+- Commands routed via case statement in `llama-aliases.sh` (e.g., `ps) _llama_ps ;;`)
+- Modular scripts define `_llama_<command>()` functions, sourced by main router
+- Environment defaults in `llama-env.sh`: `LLM_MODELS_DIR`, `LLM_SERVER_PORT`, `LLM_DEFAULT_CTX`, etc.
+
+## `llama ps` behavior (after fixes)
+- Default: compact table with PID, MODEL, PORT, CTX, CPU%, MEM% columns
+- `llama ps --args`: appends full command line below table for each process
+- Extracts model name from `--model` flag in ps aux output
+- Extracts context size from `--ctx-size` flag
+- Uses `printf` with fixed-width columns for alignment
+
+## Known issues
+- `llama-convert.sh` line 207: syntax error: unexpected end of file (pre-existing, not fixed)
+- macOS locale uses decimal commas (19,1) instead of dots — workaround uses `LC_NUMERIC=C` or similar
+
+## User preferences
+- Clean, readable table formatting over raw output
+- Truncated model names are fine but alignment must be correct
+- Extra info (like full args) should be opt-in via flag, not default

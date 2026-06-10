@@ -43,9 +43,34 @@ _llama_logs() {
 }
 
 _llama_doctor() {
-    local model_query="$1"
+    local model_query=""
     local model_path=""
+    local download_mmproj=0
     local log_file="${LLM_SERVER_LOG_FILE:-$HOME/.llama/llama-server.log}"
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --download-mmproj)
+                download_mmproj=1
+                shift
+                ;;
+            -h|--help)
+                echo "Usage: llama doctor [model] [--download-mmproj]"
+                echo "  --download-mmproj   Download missing mmproj-F16.gguf files when repo metadata is available"
+                return 0
+                ;;
+            *)
+                if [ -z "$model_query" ]; then
+                    model_query="$1"
+                    shift
+                else
+                    echo "Unknown argument: $1"
+                    echo "Usage: llama doctor [model] [--download-mmproj]"
+                    return 1
+                fi
+                ;;
+        esac
+    done
 
     if [ -n "$model_query" ]; then
         model_path=$(_llama_find_model "$model_query") || return 1
@@ -115,15 +140,15 @@ _llama_doctor() {
         echo "[OK] Model resolves: ${model_path##*/}"
         if _llama_binary_supports_mtp llama-cli; then
             if [ "$(_llama_model_tech_for_file "$model_path")" = "MTP" ]; then
-                echo "[OK] MTP mode: checkpoint marked as MTP (draft tokens: 2)"
+                echo "[OK] MTP mode: checkpoint marked as MTP (draft tokens: ${_LLAMA_MTP_DRAFT_N_MAX:-2})"
             else
                 local draft_model_path=""
                 local assistant_dir=""
                 if draft_model_path=$(_llama_find_draft_model "$model_path"); then
-                    echo "[OK] MTP mode: assistant MTP available (${draft_model_path##*/}, draft tokens: 2)"
+                    echo "[OK] MTP mode: assistant MTP available (${draft_model_path##*/}, draft tokens: ${_LLAMA_MTP_DRAFT_N_MAX:-2})"
                 elif assistant_dir=$(_llama_find_local_assistant_dir_for_model "$model_path" 2>/dev/null); then
                     if _llama_binary_supports_gemma_assistant llama-cli; then
-                        echo "[OK] MTP mode: assistant safetensors in ${assistant_dir##*/} (llama.cpp auto-detects with --spec-type draft-mtp, draft tokens: $_LLAMA_MTP_DRAFT_N_MAX)"
+                        echo "[OK] MTP mode: assistant safetensors in ${assistant_dir##*/} (llama.cpp auto-detects with --spec-type draft-mtp, draft tokens: ${_LLAMA_MTP_DRAFT_N_MAX:-2})"
                     else
                         echo "[WARN] MTP mode: assistant directory found (${assistant_dir##*/})"
                         echo "[INFO] MTP mode: this llama.cpp build lacks gemma4_assistant support"
@@ -134,6 +159,83 @@ _llama_doctor() {
             fi
         else
             echo "[INFO] MTP mode: llama.cpp binary does not support draft-mtp"
+        fi
+    fi
+
+    local targets=()
+    if [ -n "$model_path" ]; then
+        targets+=("$model_path")
+    elif [ -d "$LLM_MODELS_DIR" ]; then
+        while IFS= read -r -d '' f; do
+            local bname="${f##*/}"
+            [[ "$bname" == mmproj* ]] && continue
+            targets+=("$f")
+        done < <(find "$LLM_MODELS_DIR" -maxdepth 1 -name "*.gguf" -print0 2>/dev/null | sort -z)
+    fi
+
+    local mmproj_missing=0
+    local mmproj_downloaded=0
+    local mmproj_failed=0
+
+    if [ ${#targets[@]} -gt 0 ]; then
+        echo ""
+        echo "mmproj check:"
+        local target filename mmproj_path repo model_base stripped_base mmproj_out mmproj_remote http_status
+        mmproj_remote="mmproj-F16.gguf"
+
+        for target in "${targets[@]}"; do
+            filename="${target##*/}"
+            if mmproj_path=$(_llama_find_mmproj "$target" 2>/dev/null); then
+                echo "[OK] mmproj: ${filename} -> ${mmproj_path##*/}"
+                continue
+            fi
+
+            mmproj_missing=$((mmproj_missing + 1))
+            echo "[WARN] mmproj missing: ${filename} (needed for vision inputs only)"
+
+            if [ "$download_mmproj" -eq 0 ]; then
+                continue
+            fi
+
+            repo=$(_llama_model_meta_get_field "$filename" repo)
+            if [ -z "$repo" ]; then
+                echo "  [INFO] no repo metadata for ${filename}; cannot auto-download mmproj"
+                mmproj_failed=$((mmproj_failed + 1))
+                continue
+            fi
+
+            http_status=$(curl -sf -o /dev/null -w "%{http_code}" -L --max-time 5 "https://huggingface.co/${repo}/resolve/main/${mmproj_remote}" 2>/dev/null)
+            if [ "$http_status" != "200" ]; then
+                echo "  [INFO] mmproj-F16.gguf not available in ${repo}"
+                mmproj_failed=$((mmproj_failed + 1))
+                continue
+            fi
+
+            model_base="${filename%.gguf}"
+            stripped_base=$(echo "$model_base" | sed -E 's/[-_]((UD|UDT)-)?Q[0-9]+_[A-Z0-9]+(_[A-Z0-9]+)*$//')
+            mmproj_out="$LLM_MODELS_DIR/mmproj-F16-${stripped_base}.gguf"
+
+            echo "  ▶ downloading mmproj for ${filename} ..."
+            if command -v hf >/dev/null 2>&1; then
+                hf download "$repo" --include "$mmproj_remote" --local-dir "$LLM_MODELS_DIR" >/dev/null 2>&1
+                [ -f "$LLM_MODELS_DIR/$mmproj_remote" ] && mv -f "$LLM_MODELS_DIR/$mmproj_remote" "$mmproj_out"
+            else
+                curl -L --progress-bar -o "$mmproj_out" "https://huggingface.co/${repo}/resolve/main/${mmproj_remote}" >/dev/null 2>&1
+            fi
+
+            if [ -f "$mmproj_out" ]; then
+                echo "  [OK] downloaded ${mmproj_out##*/}"
+                mmproj_downloaded=$((mmproj_downloaded + 1))
+            else
+                echo "  [WARN] download failed for ${filename}"
+                mmproj_failed=$((mmproj_failed + 1))
+            fi
+        done
+
+        if [ "$download_mmproj" -eq 0 ] && [ "$mmproj_missing" -gt 0 ]; then
+            echo "[INFO] Run again with: llama doctor ${model_query:-} --download-mmproj"
+        elif [ "$download_mmproj" -eq 1 ]; then
+            echo "[INFO] mmproj download summary: downloaded=$mmproj_downloaded failed=$mmproj_failed missing_before=$mmproj_missing"
         fi
     fi
 
@@ -165,20 +267,24 @@ _llama_help() {
     echo "Usage: llama <subcommand> [options]"
     echo ""
     echo "Subcommands:"
-    echo "  run [--no-thinking] <model> [args]   Run interactively (auto-MTP for supported models)"
-    echo "  serve [-d] [--no-thinking] <model> [args]  Start OpenAI-compatible API server (auto-MTP for supported models)"
+    echo "  run [--no-thinking] <model> [args]   Run interactively"
+    echo "  serve [-d] [--mtp] [--mtp-model <draft>] [--mtp-draft-n-max N] [model] [args]  Start OpenAI-compatible API server (no model => fzf picker from llama list)"
     echo "  list [-a]              List local models (-a shows mmproj files)"
     echo "  pull <repo-or-url>     Pull model files (GGUF chooser; MLX repos auto-download fully)"
     echo "  rm|remove <model...>   Remove one or more models and their mmproj files"
     echo "  stop                   Stop running server"
     echo "  ps                     Show server status"
     echo "  logs [-f] [-n N]       Show/follow detached server logs"
-    echo "  doctor [model]         Check binaries, models dir, and server health"
+    echo "  doctor [model] [--download-mmproj]  Check binaries, models dir, server health, and mmproj availability"
     echo "  config <key> ...       Set runtime env toggles without manual export"
     echo "  bench <model>          Run benchmark"
     echo "  speed <model> [--tokens N] [--runs N]   Measure generation speed via llama-cli"
     echo "  pipe <model> <instr> [file]  Pipe stdin or file into model with instruction"
-    echo "  opencode|pi <model>    Register model in OpenCode + Pi configs"
+    echo "  convert <hf-model-or-dir> [args]   Convert to GGUF (auto-detects assistant/MTP); use --full or --mtp to force mode"
+    echo "  update-convert         Refresh conversion scripts from llama.cpp"
+    echo "  check-convert          Verify conversion dependencies (python/torch/transformers/gguf)"
+    echo "  opencode <model|sync> Register or sync models into OpenCode config"
+    echo "  pi <model|sync>       Register or sync models into Pi config"
     echo "  help                   Show this help"
     echo ""
     echo "Environment variables:"
