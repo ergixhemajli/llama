@@ -251,12 +251,18 @@ if target in ("opencode", "both"):
     removed = sorted(existing_keys - usable_set)
     added = sorted(usable_set - existing_keys)
 
+    ctx_limit = int(os.environ.get("LLM_DEFAULT_CTX", "196608"))
     for mid in removed:
         del models[mid]
+    for mid in existing_keys:
+        models[mid] = {
+            "name": friendly_name(mid),
+            "limit": {"context": ctx_limit, "output": 8192},
+        }
     for mid in added:
         models[mid] = {
             "name": friendly_name(mid),
-            "limit": {"context": int(os.environ.get("LLM_DEFAULT_CTX", "196608")), "output": 8192},
+            "limit": {"context": ctx_limit, "output": 8192},
         }
 
     if target == "opencode" or os.path.exists(op_path):
@@ -283,9 +289,12 @@ if target in ("pi", "both"):
 
     new_models: List[dict] = []
     added = 0
+    ctx_limit = int(os.environ.get("LLM_DEFAULT_CTX", "196608"))
     for mid in usable_ids:
         if mid in existing_by_id:
-            new_models.append(existing_by_id[mid])
+            m = dict(existing_by_id[mid])
+            m["contextWindow"] = ctx_limit
+            new_models.append(m)
         else:
             added += 1
             new_models.append(
@@ -294,7 +303,7 @@ if target in ("pi", "both"):
                     "name": friendly_name(mid),
                     "reasoning": True,
                     "input": ["text"],
-                    "contextWindow": int(os.environ.get("LLM_DEFAULT_CTX", "196608")),
+                    "contextWindow": ctx_limit,
                     "maxTokens": 8192,
                     "cost": {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0},
                 }

@@ -14,22 +14,26 @@ _llama_stop() {
         local pid
         pid=$(cat "$pid_file" 2>/dev/null)
         if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
-            echo "Stopping llama-server (PID: $pid)..."
+            echo "Stopping llama-server (PID $pid)..."
             kill "$pid" 2>/dev/null
             rm -f "$pid_file"
-            echo "llama-server stopped."
-        else
-            echo "No running llama-server found (stale PID file removed)."
-            rm -f "$pid_file"
+            echo "Stopped."
+            return 0
         fi
+
+        rm -f "$pid_file"
+        echo "No running server found. Removed stale PID file."
+        return 0
+    fi
+
+    # Fallback: stop by process name if no PID file exists
+    local pids
+    pids=$(pgrep -f "llama-server" | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+    if [ -n "$pids" ]; then
+        echo "Stopping llama-server process(es): $pids"
+        pkill -f "llama-server" 2>/dev/null
+        echo "Stopped."
     else
-        # Fallback: kill by name
-        if pgrep -f "llama-server" >/dev/null 2>&1; then
-            echo "Stopping llama-server processes..."
-            pkill -f "llama-server" 2>/dev/null
-            echo "Done."
-        else
-            echo "No llama-server processes found."
-        fi
+        echo "llama-server is not running."
     fi
 }

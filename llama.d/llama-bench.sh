@@ -137,8 +137,22 @@ _llama_speed() {
         tps=$(printf '%s\n' "$out" | python3 -c '
 import re,sys
 s=sys.stdin.read()
-m=re.findall(r"([0-9]+(?:\.[0-9]+)?)\s*tokens/s", s)
-print(m[-1] if m else "")
+# Prefer Generation speed from summary lines, accepting dot/comma decimals.
+# Examples:
+#   [ Prompt: 225,9 t/s | Generation: 84,7 t/s ]
+#   ... 84.7 tokens/s
+m_gen = re.findall(r"Generation:\s*([0-9]+(?:[\.,][0-9]+)?)\s*t/s", s, flags=re.IGNORECASE)
+if m_gen:
+    print(m_gen[-1].replace(",", "."))
+    raise SystemExit(0)
+
+m_tok = re.findall(r"([0-9]+(?:[\.,][0-9]+)?)\s*tokens/s", s, flags=re.IGNORECASE)
+if m_tok:
+    print(m_tok[-1].replace(",", "."))
+    raise SystemExit(0)
+
+m_ts = re.findall(r"([0-9]+(?:[\.,][0-9]+)?)\s*t/s", s, flags=re.IGNORECASE)
+print(m_ts[-1].replace(",", ".") if m_ts else "")
 ')
         if [ -n "$tps" ]; then
             echo "    tokens/s: $tps"

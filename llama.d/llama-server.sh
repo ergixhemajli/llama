@@ -125,6 +125,7 @@ _llama_serve() {
         --cache-type-v "$LLM_DEFAULT_CACHE_TYPE_V"
         --host "$LLM_SERVER_HOST"
         --port "$LLM_SERVER_PORT"
+        --mlock
     )
 
     if [ "$mtp" -eq 1 ]; then

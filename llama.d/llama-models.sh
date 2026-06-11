@@ -151,7 +151,15 @@ _llama_find_model() {
     local exact_gguf="$LLM_MODELS_DIR/${query}.gguf"
     [ -f "$exact_gguf" ] && { echo "$exact_gguf"; return 0; }
     local fuzzy
-    fuzzy=$(find "$LLM_MODELS_DIR" -iname "*${query}*.gguf" 2>/dev/null | sort | head -1)
+    # Prefer base models over MTP-heads-only files and mmproj files
+    # MTP draft files (~400M) are auxiliary and should not be returned as the primary model
+    # Use -maxdepth 1 to avoid searching hidden directories like .assistant-gguf
+    fuzzy=$(find "$LLM_MODELS_DIR" -maxdepth 1 -iname "*${query}*.gguf" 2>/dev/null | \
+        grep -vi '\-mtp\-' | grep -v '/mmproj' | sort | head -1)
+    # Fallback to any match if no non-MTP file found
+    if [ -z "$fuzzy" ]; then
+        fuzzy=$(find "$LLM_MODELS_DIR" -maxdepth 1 -iname "*${query}*.gguf" 2>/dev/null | sort | head -1)
+    fi
     if [ -n "$fuzzy" ]; then echo "$fuzzy"; return 0; fi
     echo "Error: model '$query' not found in $LLM_MODELS_DIR" >&2
     return 1
@@ -177,37 +185,83 @@ _llama_find_mmproj() {
 }
 
 _llama_find_draft_model() {
-    local target_model_path="$1"
-    local target_base="${target_model_path##*/}"
-    target_base="${target_base%.gguf}"
-    local target_base_lc
-    target_base_lc="$(_llama_lower "$target_base")"
-    local target_stem
-    target_stem="$(_llama_model_strip_quant "$target_base")"
-    local target_stem_lc
-    target_stem_lc="$(_llama_lower "$target_stem")"
-    local dir
-    dir=$(dirname "$target_model_path")
-    local f b b_no_ext b_lc
+    (
+        # Run in a subshell so any interactive xtrace/debug shell settings
+        # cannot leak trace lines into stdout command substitutions.
+        set +x
 
-    for f in "$dir"/*.gguf; do
-        [ -f "$f" ] || continue
-        [ "$f" = "$target_model_path" ] && continue
-        b="${f##*/}"
-        b_no_ext="${b%.gguf}"
-        b_lc="$(_llama_lower "$b_no_ext")"
-        [[ "$b_lc" != *assistant* ]] && continue
-        if [[ "$b_lc" == "$target_stem_lc"* ]]; then
-            echo "$f"
-            return 0
-        fi
-        if [[ "$b_lc" == "$target_base_lc"* ]]; then
-            echo "$f"
-            return 0
-        fi
-    done
+        local target_model_path="$1"
+        local target_base="${target_model_path##*/}"
+        target_base="${target_base%.gguf}"
+        local target_base_lc
+        target_base_lc="$(_llama_lower "$target_base")"
+        local target_stem
+        target_stem="$(_llama_model_strip_quant "$target_base")"
+        local target_stem_lc
+        target_stem_lc="$(_llama_lower "$target_stem")"
+        local dir
+        dir=$(dirname "$target_model_path")
+        local f b b_no_ext b_lc
 
-    return 1
+        # Pass 1: Look for -MTP files (Gemma 4 style, separate draft-head GGUFs)
+        # These are small files (~400M) containing only the MTP auxiliary heads.
+        # Naming pattern: <prefix>-MTP-<quant>.gguf vs <prefix>-qat-<quant>.gguf
+        # We match by finding common model family prefix (e.g., gemma-4-12b-it)
+        for f in "$dir"/*.gguf; do
+            [ -f "$f" ] || continue
+            [ "$f" = "$target_model_path" ] && continue
+            b="${f##*/}"
+            b_no_ext="${b%.gguf}"
+            b_lc="$(_llama_lower "$b_no_ext")"
+            [[ "$b_lc" != *-mtp* ]] && continue
+            [[ "$b_lc" == mmproj* ]] && continue
+
+            # Strategy: extract model family from both names and compare
+            # e.g. gemma-4-12b-it-qat-gguf-gemma-4-12b-it-qat (target stem)
+            #      gemma-4-12b-it-qat-gguf-gemma-4-12b-it-mtp (mtp stem)
+            # Common prefix: gemma-4-12b-it-qat-gguf-gemma-4-12b-it
+            mtp_stem=$(_llama_model_strip_quant "$b_no_ext")
+            mtp_stem_lc="$(_llama_lower "$mtp_stem")"
+
+            # Try matching by removing the variant suffix (-qat, -mtp, etc.) from both
+            # This handles: gemma-4-12b-it-qat vs gemma-4-12b-it-mtp
+            target_normalized=$(printf '%s' "$target_stem_lc" | sed 's/[-]\(qat\|mtp\|it\)\([-.]\|$\)/\2/g' | sed 's/[-][-]$/-/g')
+            mtp_normalized=$(printf '%s' "$mtp_stem_lc" | sed 's/[-]\(qat\|mtp\|it\)\([-.]\|$\)/\2/g' | sed 's/[-][-]$/-/g')
+
+            if [ "$target_normalized" = "$mtp_normalized" ]; then
+                echo "$f"
+                return 0
+            fi
+
+            # Fallback: check if MTP file contains the target model family name
+            # Extract model family: everything before -GGUF- or -qat or -MTP
+            target_family=$(printf '%s' "$target_stem_lc" | sed -E 's/-gguf.*$//;s/[-](qat|mtp|it)[-.]*$//')
+            if [[ "$mtp_stem_lc" == *"$target_family"* ]]; then
+                echo "$f"
+                return 0
+            fi
+        done
+
+        # Pass 2: Look for assistant files (Qwen/other style)
+        for f in "$dir"/*.gguf; do
+            [ -f "$f" ] || continue
+            [ "$f" = "$target_model_path" ] && continue
+            b="${f##*/}"
+            b_no_ext="${b%.gguf}"
+            b_lc="$(_llama_lower "$b_no_ext")"
+            [[ "$b_lc" != *assistant* ]] && continue
+            if [[ "$b_lc" == "$target_stem_lc"* ]]; then
+                echo "$f"
+                return 0
+            fi
+            if [[ "$b_lc" == "$target_base_lc"* ]]; then
+                echo "$f"
+                return 0
+            fi
+        done
+
+        return 1
+    )
 }
 
 _llama_infer_assistant_hf_repo_from_filename() {
